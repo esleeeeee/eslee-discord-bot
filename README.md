@@ -1,240 +1,102 @@
 # eslee Discord Bot
 
-[➕ **Add eslee-bot to your Discord server**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
+[➕ **eslee-bot을 내 Discord 서버에 추가하기**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
 
-This permanent invite URL points to the official bot application. Servers that install it automatically use the currently deployed bot version; no re-invitation is required after updates.
+이 고정 초대 링크는 공식 봇 애플리케이션을 가리킵니다. 한 번 서버에 추가하면 이후 코드가 업데이트되어도 다시 초대할 필요 없이 현재 배포된 최신 봇 기능을 사용합니다.
 
-**Language:** English · [한국어](README.ko.md)
+**언어:** [English](README.md) · 한국어
 
-`eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible and removes forbidden words in real time. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
+친구들과 쓰는 소규모 Discord 서버를 위한 공지 리마인드·금지어 관리 봇입니다. 공지 원본을 보존하면서 6시간마다 다시 노출하고, Poll을 복제하지 않아 기존 투표 결과와 참여 기록을 유지합니다. 이미지와 파일도 반복 업로드하지 않습니다.
 
-The bot also provides persistent, server-specific moderation with DM-first warnings, a short-lived channel fallback, and optional administrator audit logs.
+## 주요 기능
 
-## Overview
+- 메시지 우클릭 `Apps → 공지로 등록`
+- `/공지 등록`, `/공지 목록`, `/공지 삭제`, `/공지 즉시전송`
+- DB 기반 6시간 스케줄과 재시작 복구
+- 짧은/긴 텍스트, 이미지, 파일, 혼합 첨부, Poll 리마인드
+- Poll 원본 종료 시각 기준 남은 시간 표시
+- 금지어 부분 문자열 검사, 영문 대소문자 무시, Unicode NFKC 처리
+- `/금지어 일괄추가`로 쉼표 또는 줄바꿈 구분 최대 500개(총 6000자) 등록
+- `/금지어 목록`은 일반 사용자를 포함한 서버 구성원 모두 사용 가능
+- 새 메시지와 수정 메시지 검사
+- 여러 금지어를 한 번에 감지하되 삭제·경고는 한 번만 수행
+- 사용자 DM 우선 경고, 실패 시 약 5초짜리 채널 경고
+- `/설정 로그채널` 관리자 감사 로그
+- 원문을 저장하지 않는 개인정보 최소화 위반 기록
 
-- Python 3.12 and `discord.py` 2.7.1
-- Async SQLAlchemy 2.x with SQLite and `aiosqlite`
-- Database-driven scheduling that survives process restarts
-- Korean user-facing commands and responses
-- Minimal Discord intents and permissions
+## 빠른 설치
 
-## Why This Project
+Python 3.12 이상이 필요합니다.
 
-Discord's pin list requires members to look for it manually. This bot periodically exposes important messages in the channel while keeping one canonical source. A Poll reminder links back to the original Poll, preserving every vote. Attachment reminders reference existing Discord-hosted files instead of re-uploading them.
-
-Moderation follows the same practical approach: matching is predictable, warnings are private when possible, and stored violation records exclude the original message body.
-
-## Features
-
-- Multiple concurrent announcements per server
-- Immediate first reminder, then a fixed six-hour cadence
-- Previous reminder cleanup before the next reminder
-- Short text, long text, image, file, mixed, and Poll-aware embeds
-- Source edits reflected in later reminders
-- Source deletion automatically disables the announcement
-- Case-insensitive, Unicode-normalized substring moderation
-- New-message and uncached raw message-edit inspection
-- Multiple matches handled as one deletion, one warning, and one violation
-- Other bots and webhooks ignored by default
-- Server owner or Discord Administrator management policy
-
-## Announcement Reminder System
-
-Announcements are stored in SQLite with `last_sent_at` and `next_send_at`. A single scheduler polls due rows every 60 seconds by default. It does not reset a six-hour timer on every restart. After downtime, each due announcement is sent at most once, and missed time slots are skipped until the next future six-hour boundary.
-
-Each reminder:
-
-1. Fetches the current source message.
-2. Attempts to delete the prior reminder; an already-deleted reminder is harmless.
-3. Builds a content-aware embed with a source jump link.
-4. Sends the new reminder.
-5. Atomically updates the snapshot, reminder ID, sent time, and next due time.
-
-Images and files are referenced, never re-uploaded. Polls are never copied or deleted; their reminders display the real question, known finalized state, and remaining time such as `25시간 30분`, then link to the original Poll. Participation counts are intentionally omitted because a summed vote count is not a reliable unique-participant count for multi-select Polls.
-
-## Forbidden Word Moderation
-
-Matching uses Unicode NFKC normalization plus `casefold()` and a simple substring rule. Spaces and punctuation are not stripped, avoiding aggressive false positives. When one or more words match, the bot attempts message deletion, warns the user by DM, falls back to a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus matched words in SQLite.
-
-Messages from bots, the bot itself, and webhooks are ignored. Both newly created messages and message edits are inspected. Attachment-only messages have no text and are ignored.
-
-## Demo
-
-Demo media can be added later under `docs/assets/` as `announcement-demo.gif` and `moderation-demo.gif`. They are not embedded yet, so the README does not show broken images.
-
-## Architecture
-
-```text
-Discord interactions/events
-        │
-        ├── cogs/              command and event adapters
-        ├── services/          testable content and matching rules
-        ├── tasks/             persistent announcement scheduler
-        └── database/          async models and repositories
-                 │
-              SQLite
-```
-
-Discord-specific network work stays in Cogs and the scheduler. Text normalization, matching, classification, truncation, permissions, links, and schedule math are independently testable.
-
-## Commands
-
-| Command | Access | Purpose |
-| --- | --- | --- |
-| Apps → `공지로 등록` | Owner/Admin | Register an existing message |
-| `/공지 등록` | Owner/Admin | Create and register a source message |
-| `/공지 목록` | Owner/Admin | List active notices with previews and links |
-| `/공지 삭제` | Owner/Admin | Delete a notice using autocomplete |
-| `/공지 즉시전송` | Owner/Admin | Send a reminder now |
-| `/금지어 추가` | Owner/Admin | Add a forbidden word |
-| `/금지어 일괄추가` | Owner/Admin | Add up to 500 comma/newline-separated words |
-| `/금지어 삭제` | Owner/Admin | Remove a word using autocomplete |
-| `/금지어 목록` | Everyone | List registered words |
-| `/설정 로그채널` | Owner/Admin | Select an existing audit-log channel |
-
-Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses DM then a temporary channel fallback.
-
-## Project Structure
-
-```text
-src/eslee_bot/
-├── bot.py                 # lifecycle, intents, and command sync
-├── config.py              # validated environment settings
-├── cogs/                  # announcement, moderation, settings adapters
-├── database/              # SQLAlchemy models, session, repositories
-├── services/              # business and presentation rules
-├── tasks/                 # restart-safe scheduler
-└── utils/                 # permissions, text, time, message links
-tests/                     # pure logic and async persistence tests
-.github/workflows/ci.yml   # Ruff and pytest
-```
-
-## Tech Stack
-
-- Python 3.12+
-- discord.py 2.7.1
-- SQLAlchemy 2.0.51 async ORM
-- SQLite and aiosqlite
-- pydantic-settings and `.env`
-- pytest, pytest-asyncio, and Ruff
-- Docker and GitHub Actions
-
-## Installation
-
-```bash
+```powershell
 git clone https://github.com/esleeeeee/eslee-discord-bot.git
-cd eslee-discord-bot
+Set-Location eslee-discord-bot
 python -m venv .venv
-```
-
-Activate the virtual environment, then install:
-
-```bash
+.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-cp .env.example .env
+Copy-Item .env.example .env
 ```
 
-On PowerShell, copy the file with `Copy-Item .env.example .env`.
+`.env`의 `DISCORD_TOKEN`을 실제 봇 토큰으로 바꾼 뒤 실행합니다.
 
-## Discord Developer Portal Setup
+```powershell
+python -m eslee_bot
+```
 
-1. Create an application at the Discord Developer Portal.
-2. Open **Bot**, create the bot user, and copy its token into `.env`.
-3. Enable **Message Content Intent** under Privileged Gateway Intents.
-4. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes.
-5. Grant only the permissions listed below and invite the bot.
+## Discord Developer Portal 설정
 
-Never commit the token. If a token is exposed, reset it immediately in the portal.
-
-## Required Intents
-
-- Guilds
-- Guild Messages
-- Message Content (privileged; must be enabled in the Developer Portal)
-
-The Members intent is not required.
-
-## Required Bot Permissions
-
-Required:
+1. 애플리케이션과 Bot 사용자를 생성합니다.
+2. **Privileged Gateway Intents**에서 **Message Content Intent**를 켭니다.
+3. OAuth2 초대 URL에 `bot`, `applications.commands` scope를 넣습니다.
+4. 다음 권한만 부여합니다.
 
 - View Channels
 - Send Messages
 - Manage Messages
 - Read Message History
 - Embed Links
-- Use Application Commands (through the OAuth scope)
 
-`Attach Files` is not needed because reminders never re-upload attachments. Do not grant the bot Discord Administrator.
+Administrator 권한과 Attach Files 권한은 필요하지 않습니다. Members Intent도 사용하지 않습니다.
 
-## Environment Variables
+개발 중에는 `.env`의 `DISCORD_DEV_GUILD_ID`에 테스트 서버 ID를 넣으면 명령이 해당 서버에 빠르게 동기화됩니다. 비워 두면 global sync를 사용하며 Discord 반영에 시간이 걸릴 수 있습니다.
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `DISCORD_TOKEN` | Yes | — | Secret bot token |
-| `DISCORD_DEV_GUILD_ID` | No | empty | Fast command sync to one development guild |
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | Async SQLAlchemy URL |
-| `LOG_LEVEL` | No | `INFO` | Standard Python log level |
-| `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
+## 환경변수
 
-If `DISCORD_DEV_GUILD_ID` is set, global commands are copied and synchronized to that guild for quick development. If it is unset, commands are synchronized globally; Discord can take time to propagate global changes.
-
-## Running Locally
-
-```bash
-python -m eslee_bot
+```env
+DISCORD_TOKEN=replace-with-your-bot-token
+DISCORD_DEV_GUILD_ID=
+DATABASE_URL=sqlite+aiosqlite:///./data/eslee_bot.db
+LOG_LEVEL=INFO
+SCHEDULER_POLL_SECONDS=60
 ```
 
-The first run creates `data/eslee_bot.db`. Missing or invalid required environment values produce a readable startup error without exposing secrets.
+`.env`는 Git에서 제외됩니다. 토큰이 노출되면 Developer Portal에서 즉시 재발급하세요.
 
 ## Docker
 
-```bash
-cp .env.example .env
-# Edit .env, then:
+```powershell
+Copy-Item .env.example .env
+# .env 수정 후
 docker compose up --build -d
 docker compose logs -f bot
 ```
 
-The image runs as a non-root user. Compose mounts the named `bot-data` volume at `/app/data`, preserving SQLite data across container replacement without host bind-mount ownership problems.
+`bot-data` named volume이 컨테이너 `/app/data`에 마운트되어 SQLite DB가 유지됩니다. non-root 컨테이너와 host bind mount 사이의 소유권 문제도 피합니다.
 
-## Testing
+## 검사
 
-```bash
+```powershell
 python -m ruff check .
 python -m pytest
 ```
 
-Tests cover moderation normalization and matching, content classification and truncation, six-hour and overdue schedule math, source jump links, permissions, uniqueness, and privacy-minimized persistence.
+## 운영 주의사항
 
-## CI
+- 관리 명령은 서버 소유자 또는 Discord Administrator 권한 보유자만 실행할 수 있습니다.
+- 봇 자체에는 Administrator를 부여하지 마세요.
+- 설정한 로그 채널에는 위반 메시지 원문이 표시되므로 관리자만 접근하게 하세요.
+- DB 위반 기록에는 원문이 저장되지 않고 서버·사용자·채널 ID와 감지 단어만 저장됩니다.
+- v1은 스키마 마이그레이션 도구 없이 시작 시 누락 테이블을 생성합니다. 모델 변경 전에는 DB를 백업하세요.
+- SQLite 파일 하나를 공유하는 다중 봇 프로세스 실행은 지원하지 않습니다. 한 인스턴스만 실행하세요.
 
-GitHub Actions runs on pushes and pull requests using Python 3.12. It installs the development extras, runs Ruff, then runs pytest.
-
-## Security
-
-- Tokens are loaded from `.env`, which is ignored by Git.
-- No token or user message body is written to application logs.
-- The bot neither requests nor requires Discord Administrator.
-- Discord rate limits are left to `discord.py`; no bypass is attempted.
-- User-provided announcement text cannot generate mentions when the bot creates its source message.
-
-## Privacy
-
-The moderation audit channel may display the original violating message to server administrators. SQLite stores the guild, user, and channel IDs, matched words, and timestamp—but not the original message body. Choose a restricted audit channel and define an appropriate retention policy for your server.
-
-## Roadmap
-
-- Configurable reminder intervals and active date ranges
-- Quiet hours
-- Role-based managers and escalating actions
-
-These are deliberately outside v1.
-
-The v1 deployment assumes one running bot process. Running multiple replicas against the same SQLite file can duplicate external Discord actions. Schema migrations are also not included yet; back up the database before changing models.
-
-## License
-
-MIT. The current copyright label is `eslee`; update it if needed before publishing.
-
-Korean setup and operations documentation is available in [README.ko.md](README.ko.md).
+전체 구조, 명령 표, 보안 및 설계 설명은 [README.md](README.md)를 참고하세요.
