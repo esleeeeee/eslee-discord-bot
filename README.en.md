@@ -4,7 +4,7 @@
 
 This permanent invite URL points to the official bot application. Servers that install it automatically use the currently deployed bot version; no re-invitation is required after updates.
 
-**Language:** English · [한국어](README.ko.md)
+**Language:** English · [한국어](README.md)
 
 `eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible and removes forbidden words in real time. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
 
@@ -237,4 +237,4 @@ The v1 deployment assumes one running bot process. Running multiple replicas aga
 
 MIT. The current copyright label is `eslee`; update it if needed before publishing.
 
-Korean setup and operations documentation is available in [README.ko.md](README.ko.md).
+Korean setup and operations documentation is available in [README.md](README.md).
