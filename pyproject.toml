@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eslee-discord-bot"
+version = "0.1.0"
+description = "Persistent announcement reminders and forbidden-word moderation for small Discord servers."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "eslee" }]
+dependencies = [
+  "aiosqlite==0.22.1",
+  "discord.py==2.7.1",
+  "pydantic-settings==2.14.2",
+  "SQLAlchemy==2.0.51",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.2",
+  "pytest-asyncio==1.3.0",
+  "ruff==0.14.14",
+]
+
+[project.scripts]
+eslee-bot = "eslee_bot.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eslee_bot"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
