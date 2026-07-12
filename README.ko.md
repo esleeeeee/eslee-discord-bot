@@ -1,5 +1,11 @@
 # eslee Discord Bot
 
+[➕ **eslee-bot을 내 Discord 서버에 추가하기**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
+
+이 고정 초대 링크는 공식 봇 애플리케이션을 가리킵니다. 한 번 서버에 추가하면 이후 코드가 업데이트되어도 다시 초대할 필요 없이 현재 배포된 최신 봇 기능을 사용합니다.
+
+**언어:** [English](README.md) · 한국어
+
 친구들과 쓰는 소규모 Discord 서버를 위한 공지 리마인드·금지어 관리 봇입니다. 공지 원본을 보존하면서 6시간마다 다시 노출하고, Poll을 복제하지 않아 기존 투표 결과와 참여 기록을 유지합니다. 이미지와 파일도 반복 업로드하지 않습니다.
 
 ## 주요 기능
@@ -23,6 +29,8 @@
 Python 3.12 이상이 필요합니다.
 
 ```powershell
+git clone https://github.com/esleeeeee/eslee-discord-bot.git
+Set-Location eslee-discord-bot
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
