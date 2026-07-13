@@ -36,6 +36,22 @@ def test_settings_normalize_postgresql_database_url() -> None:
     assert settings.database_url == "postgresql+asyncpg://user:password@database.example/eslee"
 
 
+def test_settings_do_not_require_a_guild_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DISCORD_DEV_GUILD_ID", raising=False)
+    settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
+    assert settings.discord_dev_guild_id is None
+
+
+@pytest.mark.parametrize("variable", ["DISCORD_GUILD_ID", "GUILD_ID", "TEST_GUILD_ID"])
+def test_other_guild_id_environment_names_are_not_used(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.setenv(variable, "123456789012345678")
+    monkeypatch.delenv("DISCORD_DEV_GUILD_ID", raising=False)
+    settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
+    assert settings.discord_dev_guild_id is None
+
+
 def test_blank_development_guild_id_is_treated_as_unset() -> None:
     settings = Settings(discord_token="test-token", discord_dev_guild_id="")  # type: ignore[arg-type]
     assert settings.discord_dev_guild_id is None

@@ -55,11 +55,13 @@ class AnnouncementRepository:
         await self.session.refresh(announcement)
         return announcement
 
-    async def get(self, announcement_id: int, guild_id: int | None = None) -> Announcement | None:
-        statement = select(Announcement).where(Announcement.id == announcement_id)
-        if guild_id is not None:
-            statement = statement.where(Announcement.guild_id == guild_id)
-        return await self.session.scalar(statement)
+    async def get(self, announcement_id: int, guild_id: int) -> Announcement | None:
+        return await self.session.scalar(
+            select(Announcement).where(
+                Announcement.id == announcement_id,
+                Announcement.guild_id == guild_id,
+            )
+        )
 
     async def list_for_guild(self, guild_id: int) -> list[Announcement]:
         result = await self.session.scalars(
@@ -86,8 +88,8 @@ class AnnouncementRepository:
         await self.session.commit()
         return bool(result.rowcount)
 
-    async def set_disabled(self, announcement_id: int) -> None:
-        announcement = await self.get(announcement_id)
+    async def set_disabled(self, announcement_id: int, guild_id: int) -> None:
+        announcement = await self.get(announcement_id, guild_id)
         if announcement is not None:
             announcement.enabled = False
             await self.session.commit()
@@ -95,6 +97,7 @@ class AnnouncementRepository:
     async def mark_sent(
         self,
         announcement_id: int,
+        guild_id: int,
         *,
         reminder_message_id: int,
         sent_at: datetime,
@@ -102,7 +105,7 @@ class AnnouncementRepository:
         content_snapshot: str,
         announcement_type: str,
     ) -> None:
-        announcement = await self.get(announcement_id)
+        announcement = await self.get(announcement_id, guild_id)
         if announcement is not None:
             announcement.reminder_message_id = reminder_message_id
             announcement.last_sent_at = sent_at

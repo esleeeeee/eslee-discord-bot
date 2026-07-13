@@ -155,6 +155,7 @@ class AnnouncementScheduler:
             repository = AnnouncementRepository(session)
             await repository.mark_sent(
                 announcement.id,
+                announcement.guild_id,
                 reminder_message_id=reminder.id,
                 sent_at=sent_at,
                 next_send_at=next_future_slot(announcement.next_send_at, sent_at),
@@ -166,7 +167,9 @@ class AnnouncementScheduler:
 
     async def _disable_missing_source(self, announcement: Announcement, reason: str) -> None:
         async with self.bot.database.session_factory() as session:
-            await AnnouncementRepository(session).set_disabled(announcement.id)
+            await AnnouncementRepository(session).set_disabled(
+                announcement.id, announcement.guild_id
+            )
             settings = await GuildSettingsRepository(session).get(announcement.guild_id)
         logger.warning("Announcement %s disabled: %s", announcement.id, reason)
         if settings is None or settings.moderation_log_channel_id is None:

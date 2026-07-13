@@ -99,6 +99,8 @@ DB에 다음 전송 시각 저장
 
 [**eslee-bot 서버 초대 화면 열기**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
 
+이 링크에는 특정 `guild_id`나 서버 선택 잠금이 없습니다. Discord Developer Portal의 **Bot → Public Bot**을 켜 두면 서버 관리 권한이 있는 사용자가 각자 원하는 서버를 선택해 설치할 수 있습니다. `bot` scope로 봇 계정을 서버에 추가하고 `applications.commands` scope로 애플리케이션 명령을 사용할 수 있게 합니다.
+
 초대 링크에는 다음 기능에 필요한 최소 권한만 포함되어 있습니다: 채널 보기, 메시지 보내기, 메시지 관리, 링크 Embed, 메시지 기록 보기, 애플리케이션 명령 사용. 파일을 재업로드하거나 새로운 Poll을 만들지 않으므로 파일 첨부와 투표 만들기 권한은 요구하지 않습니다.
 
 ## 직접 실행하기
@@ -118,6 +120,7 @@ Discord Developer Portal에서 Bot을 생성하고 **Message Content Intent**를
 
 ```env
 DISCORD_TOKEN=replace-with-your-bot-token
+# 로컬 개발에서만 선택: 명령을 즉시 확인할 테스트 서버 ID
 DISCORD_DEV_GUILD_ID=
 DATABASE_URL=sqlite+aiosqlite:///./data/eslee_bot.db
 LOG_LEVEL=INFO
@@ -130,7 +133,7 @@ SCHEDULER_POLL_SECONDS=60
 python -m eslee_bot
 ```
 
-`DISCORD_DEV_GUILD_ID`에 테스트 서버 ID를 넣으면 global 명령을 갱신하면서 해당 서버에도 즉시 명령을 동기화합니다. 비워 두어도 global 명령은 정상적으로 동기화됩니다.
+특정 서버 ID는 필수가 아닙니다. 봇은 시작할 때 항상 global 명령을 먼저 동기화하므로, 프로덕션에서는 `DISCORD_DEV_GUILD_ID`를 설정하지 않습니다. 로컬 개발 중 명령 변경을 즉시 확인하고 싶을 때만 테스트 서버 ID를 넣으면 global 명령을 유지하면서 그 서버에도 개발용 사본을 동기화합니다. `DISCORD_GUILD_ID`, `GUILD_ID`, `TEST_GUILD_ID`는 사용하지 않습니다.
 
 ## Docker로 실행하기
 
@@ -151,17 +154,21 @@ Northflank의 Developer Sandbox는 현재 항상 켜지는 무료 서비스 2개
 
 1. Northflank에서 Developer Sandbox 프로젝트를 만들고, 같은 프로젝트에 무료 PostgreSQL Addon을 하나 생성합니다.
 2. **Secrets → Create secret group**에서 runtime 변수 그룹을 만들고 **Show addons**로 PostgreSQL Addon을 연결합니다. Addon이 제공하는 `POSTGRES_URI`의 alias를 정확히 `DATABASE_URL`로 지정한 뒤 이 그룹을 봇 서비스에 적용합니다. 원본 URI에는 사용자명과 비밀번호가 포함되므로 직접 복사해 GitHub에 올리지 않습니다.
-3. 같은 secret group 또는 서비스의 runtime variables에 `DISCORD_TOKEN`을 secret 값으로 추가합니다. 필요하다면 `DISCORD_DEV_GUILD_ID`, `LOG_LEVEL`, `SCHEDULER_POLL_SECONDS`도 추가합니다. 이 값들은 build argument가 아니라 실행 컨테이너에만 전달되는 runtime 변수여야 합니다.
+3. 같은 secret group 또는 서비스의 runtime variables에 `DISCORD_TOKEN`을 secret 값으로 추가합니다. 필요하다면 `LOG_LEVEL`, `SCHEDULER_POLL_SECONDS`도 추가합니다. 프로덕션에서는 `DISCORD_DEV_GUILD_ID`를 만들지 않습니다. 이 값들은 build argument가 아니라 실행 컨테이너에만 전달되는 runtime 변수여야 합니다.
 4. GitHub의 이 저장소와 `main` 브랜치를 선택해 **Combined Service**를 만들고 build type을 **Dockerfile**로 설정합니다. Dockerfile 경로는 저장소 루트의 `/Dockerfile`, 인스턴스 수는 `1`로 둡니다.
 5. Networking/Ports 단계는 비워 두고 서비스를 생성합니다. 첫 실행 시 `Base.metadata.create_all()`이 빈 PostgreSQL DB에 테이블과 인덱스를 생성합니다. 배포 로그에서 `Database initialized`, Discord 로그인, scheduler 시작 메시지를 확인합니다.
 
 Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 값은 변경하지 않습니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
+
+Northflank 운영에 필요한 환경변수는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL` 두 개입니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 특정 서버 ID 환경변수는 필요하지 않습니다.
 
 로컬 SQLite 데이터는 PostgreSQL로 자동 이전되지 않습니다. Northflank 배포가 정상적으로 Discord에 연결된 것을 확인한 뒤 로컬 봇을 종료하고, 같은 토큰으로 로컬과 Northflank에서 동시에 실행하지 마세요. 중복 리마인드를 피하기 위해 Northflank 인스턴스 수도 반드시 하나로 유지합니다.
 
 ## 코드 구조와 기술 선택
 
 Discord 이벤트 처리와 테스트 가능한 규칙을 분리했습니다. Cog는 Discord 명령과 이벤트를 받아 서비스에 전달하고, 서비스는 공지 분류·미리보기·금지어 매칭 같은 규칙을 처리합니다. Repository는 SQLAlchemy async session을 통해 선택된 DB와 통신하며, Scheduler는 DB의 `next_send_at`을 기준으로 전송할 공지를 찾습니다.
+
+명령과 메시지 이벤트는 현재 Discord 서버의 `interaction.guild.id` 또는 `message.guild.id`를 DB 작업에 전달합니다. 서버 설정, 공지, 금지어, 위반 기록은 모두 `guild_id`를 저장하며 조회·삭제·수정도 같은 `guild_id` 범위 안에서만 수행합니다. 전체 서버의 마감 공지를 찾는 scheduler만 운영상 모든 행을 조회하고, 각 행에 저장된 서버와 채널로 개별 처리합니다.
 
 ```text
 Discord 명령·이벤트

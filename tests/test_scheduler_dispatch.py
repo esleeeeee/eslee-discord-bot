@@ -56,7 +56,9 @@ async def test_dispatch_replaces_reminder_and_updates_persistent_schedule() -> N
         channel.send.assert_awaited_once()
 
         async with database.session_factory() as session:
-            stored = await AnnouncementRepository(session).get(announcement.id)
+            stored = await AnnouncementRepository(session).get(
+                announcement.id, announcement.guild_id
+            )
             assert stored is not None
             assert stored.content_snapshot == "updated source"
             assert stored.reminder_message_id == 32
@@ -79,7 +81,9 @@ async def test_missing_source_disables_only_that_announcement() -> None:
         assert await scheduler._dispatch(announcement) is False
 
         async with database.session_factory() as session:
-            stored = await AnnouncementRepository(session).get(announcement.id)
+            stored = await AnnouncementRepository(session).get(
+                announcement.id, announcement.guild_id
+            )
             assert stored is not None
             assert stored.enabled is False
     finally:

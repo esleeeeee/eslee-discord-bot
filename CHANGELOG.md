@@ -19,4 +19,6 @@ All notable changes to this project will be documented in this file.
 - Privacy-minimized moderation violation records.
 - PostgreSQL support through SQLAlchemy's asyncpg dialect while retaining SQLite locally.
 - Northflank Developer Sandbox deployment instructions and secret alias configuration.
+- Explicit global command sync and guild-scoped announcement repository operations.
+- Multi-guild data-isolation and optional development-guild regression tests.
 - Docker, Docker Compose, Ruff, pytest, and GitHub Actions support.

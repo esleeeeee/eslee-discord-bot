@@ -141,8 +141,9 @@ On PowerShell, copy the file with `Copy-Item .env.example .env`.
 1. Create an application at the Discord Developer Portal.
 2. Open **Bot**, create the bot user, and copy its token into `.env`.
 3. Enable **Message Content Intent** under Privileged Gateway Intents.
-4. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes.
-5. Grant only the permissions listed below and invite the bot.
+4. Enable **Public Bot** when other users should be able to install it in their servers.
+5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes.
+6. Grant only the permissions listed below and invite the bot.
 
 Never commit the token. If a token is exposed, reset it immediately in the portal.
 
@@ -172,12 +173,12 @@ Required:
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | — | Secret bot token |
-| `DISCORD_DEV_GUILD_ID` | No | empty | Fast command sync to one development guild |
+| `DISCORD_DEV_GUILD_ID` | No | empty | Development-only fast sync to one test guild |
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | SQLite or PostgreSQL connection URL |
 | `LOG_LEVEL` | No | `INFO` | Standard Python log level |
 | `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
 
-If `DISCORD_DEV_GUILD_ID` is set, global commands are copied and synchronized to that guild for quick development. If it is unset, commands are synchronized globally; Discord can take time to propagate global changes.
+No guild ID is required. Production always uses global commands and should leave `DISCORD_DEV_GUILD_ID` unset. When this optional value is set for local development, global sync still runs and a fast-updating copy is also synchronized to the specified test guild. `DISCORD_GUILD_ID`, `GUILD_ID`, and `TEST_GUILD_ID` are not used.
 
 ## Running Locally
 

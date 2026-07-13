@@ -36,6 +36,10 @@ class EsleeBot(commands.Bot):
         for extension in EXTENSIONS:
             await self.load_extension(extension)
 
+        await self._sync_application_commands()
+
+    async def _sync_application_commands(self) -> None:
+        """Publish globally, with an optional guild copy for faster development."""
         global_synced = await self.tree.sync()
         logger.info("Synced %s global application commands", len(global_synced))
 
