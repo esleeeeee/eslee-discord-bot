@@ -6,6 +6,18 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+POSTGRESQL_ASYNCPG_SCHEME = "postgresql+asyncpg://"
+
+
+def normalize_database_url(url: str) -> str:
+    """Select asyncpg for PostgreSQL URLs while leaving other backends unchanged."""
+    if url.startswith(POSTGRESQL_ASYNCPG_SCHEME):
+        return url
+    for scheme in ("postgresql://", "postgres://"):
+        if url.startswith(scheme):
+            return POSTGRESQL_ASYNCPG_SCHEME + url.removeprefix(scheme)
+    return url
+
 
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables and an optional .env file."""
@@ -22,6 +34,13 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/eslee_bot.db"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     scheduler_poll_seconds: int = Field(default=60, ge=10, le=300)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_async_postgresql_driver(cls, value: object) -> object:
+        if isinstance(value, str):
+            return normalize_database_url(value)
+        return value
 
     @field_validator("discord_dev_guild_id", mode="before")
     @classmethod

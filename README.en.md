@@ -13,7 +13,7 @@ The bot also provides persistent, server-specific moderation with DM-first warni
 ## Overview
 
 - Python 3.12 and `discord.py` 2.7.1
-- Async SQLAlchemy 2.x with SQLite and `aiosqlite`
+- Async SQLAlchemy 2.x with SQLite/`aiosqlite` and PostgreSQL/`asyncpg`
 - Database-driven scheduling that survives process restarts
 - Korean user-facing commands and responses
 - Minimal Discord intents and permissions
@@ -173,7 +173,7 @@ Required:
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | — | Secret bot token |
 | `DISCORD_DEV_GUILD_ID` | No | empty | Fast command sync to one development guild |
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | Async SQLAlchemy URL |
+| `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | SQLite or PostgreSQL connection URL |
 | `LOG_LEVEL` | No | `INFO` | Standard Python log level |
 | `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
 
@@ -186,6 +186,8 @@ python -m eslee_bot
 ```
 
 The first run creates `data/eslee_bot.db`. Missing or invalid required environment values produce a readable startup error without exposing secrets.
+
+PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. An already-normalized URL is left unchanged.
 
 ## Docker
 

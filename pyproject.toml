@@ -12,6 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "eslee" }]
 dependencies = [
   "aiosqlite==0.22.1",
+  "asyncpg==0.31.0",
   "discord.py==2.7.1",
   "pydantic-settings==2.14.2",
   "SQLAlchemy==2.0.51",

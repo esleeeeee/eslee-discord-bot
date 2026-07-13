@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from eslee_bot.config import normalize_database_url
 from eslee_bot.database.models import Base
 
 logger = logging.getLogger(__name__)
@@ -12,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, url: str) -> None:
-        self.url = url
+        self.url = normalize_database_url(url)
         self._ensure_sqlite_directory()
-        self.engine = create_async_engine(url, pool_pre_ping=True)
+        self.engine = create_async_engine(self.url, pool_pre_ping=True)
         self.session_factory = async_sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )

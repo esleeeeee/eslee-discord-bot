@@ -12,7 +12,7 @@ Discord에서 중요한 공지를 올려도 대화가 이어지면 금방 위로
 
 ## 공지가 대화에 묻히지 않게 합니다
 
-관리자는 이미 작성된 메시지를 우클릭한 뒤 `Apps → 공지로 등록`을 선택할 수 있습니다. 새 공지를 직접 작성하고 싶다면 `/공지 등록`을 사용하면 됩니다. 등록 직후 첫 번째 리마인드가 전송되고, 이후에는 SQLite에 저장된 일정에 따라 6시간마다 공지가 다시 노출됩니다.
+관리자는 이미 작성된 메시지를 우클릭한 뒤 `Apps → 공지로 등록`을 선택할 수 있습니다. 새 공지를 직접 작성하고 싶다면 `/공지 등록`을 사용하면 됩니다. 등록 직후 첫 번째 리마인드가 전송되고, 이후에는 데이터베이스에 저장된 일정에 따라 6시간마다 공지가 다시 노출됩니다.
 
 리마인드가 새로 올라올 때는 이전 리마인드만 정리합니다. 원본 공지 메시지는 삭제하거나 고정하지 않으며, 봇이 재시작되더라도 다음 전송 시각이 데이터베이스에 남아 있기 때문에 일정이 처음부터 다시 시작되지 않습니다. 오랫동안 봇이 꺼져 있었더라도 밀린 알림을 한꺼번에 보내지 않고 공지마다 한 번만 다시 알려준 뒤 다음 정상 주기로 돌아갑니다.
 
@@ -70,7 +70,7 @@ DB에 다음 전송 시각 저장
 
 일반 채팅 메시지에는 Discord의 ephemeral 응답을 사용할 수 없습니다. 그래서 위반 사용자에게 먼저 DM을 보내고, DM이 차단되어 있을 때만 원래 채널에 잠시 보이는 경고를 남깁니다.
 
-관리자가 `/설정 로그채널`로 감사 채널을 지정하면 해당 채널에는 사용자, 채널, 감지 단어, 삭제 성공 여부와 원문 미리보기가 Embed로 전달됩니다. 반면 SQLite 위반 기록에는 원문 전체를 저장하지 않고 서버·사용자·채널 ID와 감지된 단어, 시각만 남깁니다. 운영에 필요한 정보는 제공하면서 불필요한 개인정보 보관은 줄이기 위한 설계입니다.
+관리자가 `/설정 로그채널`로 감사 채널을 지정하면 해당 채널에는 사용자, 채널, 감지 단어, 삭제 성공 여부와 원문 미리보기가 Embed로 전달됩니다. 반면 DB 위반 기록에는 원문 전체를 저장하지 않고 서버·사용자·채널 ID와 감지된 단어, 시각만 남깁니다. 운영에 필요한 정보는 제공하면서 불필요한 개인정보 보관은 줄이기 위한 설계입니다.
 
 로그 채널이 설정되지 않았거나 접근할 수 없는 상태라도 금지어 감지와 메시지 삭제 기능 자체는 계속 동작합니다.
 
@@ -143,9 +143,25 @@ docker compose up --build -d
 docker compose logs -f bot
 ```
 
+## Northflank Developer Sandbox에 배포하기
+
+Northflank의 Developer Sandbox는 현재 항상 켜지는 무료 서비스 2개와 무료 데이터베이스 Addon 1개를 제공합니다. 이 플랜은 취미·시험용이며 Northflank는 실제 프로덕션 용도로는 권장하지 않습니다. 무료 정책과 한도는 바뀔 수 있으므로 배포 전에 [공식 요금 안내](https://northflank.com/docs/v1/application/billing/pricing-on-northflank)를 확인하세요.
+
+이 봇은 HTTP 서버가 아니라 Discord Gateway에 외부 연결을 여는 프로세스입니다. Dockerfile에는 `EXPOSE`가 없으며, Northflank 서비스에도 public/private port나 HTTP health check를 추가하지 않습니다.
+
+1. Northflank에서 Developer Sandbox 프로젝트를 만들고, 같은 프로젝트에 무료 PostgreSQL Addon을 하나 생성합니다.
+2. **Secrets → Create secret group**에서 runtime 변수 그룹을 만들고 **Show addons**로 PostgreSQL Addon을 연결합니다. Addon이 제공하는 `POSTGRES_URI`의 alias를 정확히 `DATABASE_URL`로 지정한 뒤 이 그룹을 봇 서비스에 적용합니다. 원본 URI에는 사용자명과 비밀번호가 포함되므로 직접 복사해 GitHub에 올리지 않습니다.
+3. 같은 secret group 또는 서비스의 runtime variables에 `DISCORD_TOKEN`을 secret 값으로 추가합니다. 필요하다면 `DISCORD_DEV_GUILD_ID`, `LOG_LEVEL`, `SCHEDULER_POLL_SECONDS`도 추가합니다. 이 값들은 build argument가 아니라 실행 컨테이너에만 전달되는 runtime 변수여야 합니다.
+4. GitHub의 이 저장소와 `main` 브랜치를 선택해 **Combined Service**를 만들고 build type을 **Dockerfile**로 설정합니다. Dockerfile 경로는 저장소 루트의 `/Dockerfile`, 인스턴스 수는 `1`로 둡니다.
+5. Networking/Ports 단계는 비워 두고 서비스를 생성합니다. 첫 실행 시 `Base.metadata.create_all()`이 빈 PostgreSQL DB에 테이블과 인덱스를 생성합니다. 배포 로그에서 `Database initialized`, Discord 로그인, scheduler 시작 메시지를 확인합니다.
+
+Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 값은 변경하지 않습니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
+
+로컬 SQLite 데이터는 PostgreSQL로 자동 이전되지 않습니다. Northflank 배포가 정상적으로 Discord에 연결된 것을 확인한 뒤 로컬 봇을 종료하고, 같은 토큰으로 로컬과 Northflank에서 동시에 실행하지 마세요. 중복 리마인드를 피하기 위해 Northflank 인스턴스 수도 반드시 하나로 유지합니다.
+
 ## 코드 구조와 기술 선택
 
-Discord 이벤트 처리와 테스트 가능한 규칙을 분리했습니다. Cog는 Discord 명령과 이벤트를 받아 서비스에 전달하고, 서비스는 공지 분류·미리보기·금지어 매칭 같은 규칙을 처리합니다. Repository는 SQLAlchemy async session을 통해 SQLite와 통신하며, Scheduler는 DB의 `next_send_at`을 기준으로 전송할 공지를 찾습니다.
+Discord 이벤트 처리와 테스트 가능한 규칙을 분리했습니다. Cog는 Discord 명령과 이벤트를 받아 서비스에 전달하고, 서비스는 공지 분류·미리보기·금지어 매칭 같은 규칙을 처리합니다. Repository는 SQLAlchemy async session을 통해 선택된 DB와 통신하며, Scheduler는 DB의 `next_send_at`을 기준으로 전송할 공지를 찾습니다.
 
 ```text
 Discord 명령·이벤트
@@ -156,10 +172,10 @@ Discord 명령·이벤트
         ↓
   Repositories
         ↓
- SQLite + Scheduler
+ SQLite / PostgreSQL + Scheduler
 ```
 
-프로젝트는 Python 3.12, discord.py 2.7.1, SQLAlchemy 2.x async, aiosqlite, pydantic-settings를 사용합니다. Ruff와 pytest로 품질을 검사하고 GitHub Actions에서 같은 검사를 자동 실행합니다.
+프로젝트는 Python 3.12, discord.py 2.7.1, SQLAlchemy 2.x async, 로컬 SQLite용 aiosqlite, 운영 PostgreSQL용 asyncpg, pydantic-settings를 사용합니다. Ruff와 pytest로 품질을 검사하고 GitHub Actions에서 같은 검사를 자동 실행합니다.
 
 ```powershell
 python -m ruff check .
@@ -170,7 +186,7 @@ python -m pytest
 
 ## 현재 범위와 운영 시 참고사항
 
-v1은 소규모 서버에서 하나의 봇 프로세스를 실행하는 구성을 전제로 합니다. 여러 프로세스가 같은 SQLite 파일을 공유하는 구성과 자동 DB 스키마 마이그레이션은 아직 지원하지 않습니다. 모델을 직접 변경하기 전에는 DB 파일을 백업하세요.
+v1은 소규모 서버에서 하나의 봇 프로세스를 실행하는 구성을 전제로 합니다. 여러 프로세스를 실행하면 PostgreSQL을 사용하더라도 Discord 리마인드가 중복될 수 있습니다. 자동 DB 스키마 마이그레이션은 아직 지원하지 않습니다. 모델을 직접 변경하기 전에는 DB를 백업하세요.
 
 향후에는 공지별 주기, 시작·종료일, 야간 알림 제한, 역할 기반 관리자, 반복 위반자 제재 같은 기능을 확장할 수 있습니다. 현재 버전은 실제 사용에 필요한 공지 재노출과 기본 모더레이션을 단순하고 안정적으로 제공하는 데 집중합니다.
 

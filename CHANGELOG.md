@@ -17,4 +17,6 @@ All notable changes to this project will be documented in this file.
 - DM-first user warnings with a temporary channel fallback.
 - Per-server moderation audit-log channel settings.
 - Privacy-minimized moderation violation records.
+- PostgreSQL support through SQLAlchemy's asyncpg dialect while retaining SQLite locally.
+- Northflank Developer Sandbox deployment instructions and secret alias configuration.
 - Docker, Docker Compose, Ruff, pytest, and GitHub Actions support.
