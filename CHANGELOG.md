@@ -21,4 +21,5 @@ All notable changes to this project will be documented in this file.
 - Northflank Developer Sandbox deployment instructions and secret alias configuration.
 - Explicit global command sync and guild-scoped announcement repository operations.
 - Multi-guild data-isolation and optional development-guild regression tests.
+- Northflank `sslmode` translation for SQLAlchemy's asyncpg driver.
 - Docker, Docker Compose, Ruff, pytest, and GitHub Actions support.

@@ -188,7 +188,7 @@ python -m eslee_bot
 
 The first run creates `data/eslee_bot.db`. Missing or invalid required environment values produce a readable startup error without exposing secrets.
 
-PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. An already-normalized URL is left unchanged.
+PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. Northflank's `sslmode=require` query option is translated to asyncpg's supported `ssl=require` option while preserving the TLS requirement.
 
 ## Docker
 

@@ -158,7 +158,7 @@ Northflank의 Developer Sandbox는 현재 항상 켜지는 무료 서비스 2개
 4. GitHub의 이 저장소와 `main` 브랜치를 선택해 **Combined Service**를 만들고 build type을 **Dockerfile**로 설정합니다. Dockerfile 경로는 저장소 루트의 `/Dockerfile`, 인스턴스 수는 `1`로 둡니다.
 5. Networking/Ports 단계는 비워 두고 서비스를 생성합니다. 첫 실행 시 `Base.metadata.create_all()`이 빈 PostgreSQL DB에 테이블과 인덱스를 생성합니다. 배포 로그에서 `Database initialized`, Discord 로그인, scheduler 시작 메시지를 확인합니다.
 
-Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 값은 변경하지 않습니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
+Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 scheme은 중복 변경하지 않습니다. TLS Addon URI의 `sslmode=require`는 asyncpg가 지원하는 `ssl=require` 연결 옵션으로 변환되어 TLS 요구사항을 유지합니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
 
 Northflank 운영에 필요한 환경변수는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL` 두 개입니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 특정 서버 ID 환경변수는 필요하지 않습니다.
 

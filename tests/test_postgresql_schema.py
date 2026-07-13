@@ -1,3 +1,6 @@
+import inspect
+
+import asyncpg
 import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -33,5 +36,22 @@ async def test_database_selects_asyncpg_for_standard_postgresql_url() -> None:
         )
         assert database.engine.dialect.name == "postgresql"
         assert database.engine.dialect.driver == "asyncpg"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_northflank_sslmode_is_translated_to_an_asyncpg_connect_argument() -> None:
+    database = Database(
+        "postgresql://user:password@database.example:5432/eslee?sslmode=require"
+    )
+    try:
+        assert database.url == (
+            "postgresql+asyncpg://user:password@database.example:5432/eslee?ssl=require"
+        )
+        positional, keyword = database.engine.dialect.create_connect_args(database.engine.url)
+        assert "sslmode" not in keyword
+        assert keyword["ssl"] == "require"
+        inspect.signature(asyncpg.connect).bind_partial(*positional, **keyword)
     finally:
         await database.close()

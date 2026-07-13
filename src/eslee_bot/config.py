@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,14 +10,37 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 POSTGRESQL_ASYNCPG_SCHEME = "postgresql+asyncpg://"
 
 
-def normalize_database_url(url: str) -> str:
-    """Select asyncpg for PostgreSQL URLs while leaving other backends unchanged."""
-    if url.startswith(POSTGRESQL_ASYNCPG_SCHEME):
+def _normalize_asyncpg_ssl_query(url: str) -> str:
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if not any(key == "sslmode" for key, _ in query):
         return url
-    for scheme in ("postgresql://", "postgres://"):
-        if url.startswith(scheme):
-            return POSTGRESQL_ASYNCPG_SCHEME + url.removeprefix(scheme)
-    return url
+
+    has_asyncpg_ssl = any(key == "ssl" for key, _ in query)
+    converted_sslmode = False
+    normalized_query: list[tuple[str, str]] = []
+    for key, value in query:
+        if key != "sslmode":
+            normalized_query.append((key, value))
+            continue
+        if not has_asyncpg_ssl and not converted_sslmode:
+            normalized_query.append(("ssl", value))
+            converted_sslmode = True
+
+    return urlunsplit(parts._replace(query=urlencode(normalized_query)))
+
+
+def normalize_database_url(url: str) -> str:
+    """Select asyncpg and translate libpq SSL options for PostgreSQL URLs."""
+    normalized = url
+    if not normalized.startswith(POSTGRESQL_ASYNCPG_SCHEME):
+        for scheme in ("postgresql://", "postgres://"):
+            if normalized.startswith(scheme):
+                normalized = POSTGRESQL_ASYNCPG_SCHEME + normalized.removeprefix(scheme)
+                break
+    if not normalized.startswith(POSTGRESQL_ASYNCPG_SCHEME):
+        return normalized
+    return _normalize_asyncpg_ssl_query(normalized)
 
 
 class Settings(BaseSettings):

@@ -15,12 +15,31 @@ from eslee_bot.config import Settings, normalize_database_url
             "postgresql+asyncpg://user:password@database.example:5432/eslee?ssl=require",
         ),
         (
+            "postgresql://user:password@database.example:5432/eslee?sslmode=require",
+            "postgresql+asyncpg://user:password@database.example:5432/eslee?ssl=require",
+        ),
+        (
+            "postgresql://user:password@database.example:5432/eslee"
+            "?sslmode=verify-full&target_session_attrs=read-write",
+            "postgresql+asyncpg://user:password@database.example:5432/eslee"
+            "?ssl=verify-full&target_session_attrs=read-write",
+        ),
+        (
+            "postgresql+asyncpg://user:password@database.example:5432/eslee"
+            "?sslmode=require&ssl=verify-full",
+            "postgresql+asyncpg://user:password@database.example:5432/eslee?ssl=verify-full",
+        ),
+        (
             "postgresql+asyncpg://user:password@database.example:5432/eslee",
             "postgresql+asyncpg://user:password@database.example:5432/eslee",
         ),
         (
             "sqlite+aiosqlite:///./data/eslee_bot.db",
             "sqlite+aiosqlite:///./data/eslee_bot.db",
+        ),
+        (
+            "sqlite+aiosqlite:///./data/eslee_bot.db?sslmode=require",
+            "sqlite+aiosqlite:///./data/eslee_bot.db?sslmode=require",
         ),
     ],
 )
