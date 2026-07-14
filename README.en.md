@@ -6,7 +6,7 @@ This permanent invite URL points to the official bot application. Servers that i
 
 **Language:** English · [한국어](README.md)
 
-`eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible and removes forbidden words in real time. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
+`eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible, removes forbidden words in real time, and can publish a Gemini-powered daily conversation report for one configured channel. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
 
 The bot also provides persistent, server-specific moderation with DM-first warnings, a short-lived channel fallback, and optional administrator audit logs.
 
@@ -33,9 +33,11 @@ Moderation follows the same practical approach: matching is predictable, warning
 - Source edits reflected in later reminders
 - Source deletion automatically disables the announcement
 - Case-insensitive, Unicode-normalized substring moderation
+- Bounded detection of punctuation, digit, whitespace, zero-width, `ㅋ/ㅎ`, and Hangul Jamo evasions
 - New-message and uncached raw message-edit inspection
 - Multiple matches handled as one deletion, one warning, and one violation
 - Other bots and webhooks ignored by default
+- Optional daily summary collection, Seoul-midnight startup backfill, and Gemini reports
 - Server owner or Discord Administrator management policy
 
 ## Announcement Reminder System
@@ -54,9 +56,19 @@ Images and files are referenced, never re-uploaded. Polls are never copied or de
 
 ## Forbidden Word Moderation
 
-Matching uses Unicode NFKC normalization plus `casefold()` and a simple substring rule. Spaces and punctuation are not stripped, avoiding aggressive false positives. When one or more words match, the bot attempts message deletion, warns the user by DM, falls back to a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus matched words in SQLite.
+Matching keeps the existing Unicode NFKC plus `casefold()` substring rule, then performs a bounded evasion check. For a registered word such as `주식`, forms like `주.식`, `주123식`, `주 식`, `주ㅋㅋ식`, zero-width insertion, and separated Jamo are detected without globally deleting separators or using an unrestricted wildcard. Only approved filler categories are allowed, with at most eight characters between meaningful characters, so ordinary Korean text with unrelated words in between is not joined into a match.
+
+When one or more words match, the bot attempts message deletion, warns the user by DM, falls back to a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus the originally registered matched words in the database.
 
 Messages from bots, the bot itself, and webhooks are ignored. Both newly created messages and message edits are inspected. Attachment-only messages have no text and are ignored.
+
+## Optional Daily Conversation Summary
+
+Daily summaries are opt-in and scoped to one configured guild and text channel; announcements, moderation, and server settings remain public multi-server features isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
+
+After startup, a background backfill reads Discord history from midnight in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 00:02, the previous day is aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. Raw text is retained for three days by default.
+
+The `/하루요약 상태`, `오늘`, `어제`, and `연결확인` command responses are private to the administrator who invoked them. The connection check sends one minimal Gemini request without revealing the API key or changing report state. Only the completed report body is posted publicly. See [the daily-summary operations guide](docs/daily-summary.md) for configuration, privacy, and failure handling.
 
 ## Demo
 
@@ -72,7 +84,7 @@ Discord interactions/events
         ├── tasks/             persistent announcement scheduler
         └── database/          async models and repositories
                  │
-              SQLite
+          SQLite / PostgreSQL
 ```
 
 Discord-specific network work stays in Cogs and the scheduler. Text normalization, matching, classification, truncation, permissions, links, and schedule math are independently testable.
@@ -91,6 +103,10 @@ Discord-specific network work stays in Cogs and the scheduler. Text normalizatio
 | `/금지어 삭제` | Owner/Admin | Remove a word using autocomplete |
 | `/금지어 목록` | Everyone | List registered words |
 | `/설정 로그채널` | Owner/Admin | Select an existing audit-log channel |
+| `/하루요약 상태` | Configured guild Owner/Admin | Inspect summary configuration and status |
+| `/하루요약 오늘` | Configured guild Owner/Admin | Generate today's private preview |
+| `/하루요약 어제` | Configured guild Owner/Admin | Generate yesterday's report manually |
+| `/하루요약 연결확인` | Configured guild Owner/Admin | Privately verify Gemini model access |
 
 Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses DM then a temporary channel fallback.
 
@@ -100,10 +116,10 @@ Management responses are ephemeral. Ordinary message moderation cannot use ephem
 src/eslee_bot/
 ├── bot.py                 # lifecycle, intents, and command sync
 ├── config.py              # validated environment settings
-├── cogs/                  # announcement, moderation, settings adapters
+├── cogs/                  # announcement, moderation, settings, summary adapters
 ├── database/              # SQLAlchemy models, session, repositories
 ├── services/              # business and presentation rules
-├── tasks/                 # restart-safe scheduler
+├── tasks/                 # announcement and daily-summary schedulers
 └── utils/                 # permissions, text, time, message links
 tests/                     # pure logic and async persistence tests
 .github/workflows/ci.yml   # Ruff and pytest
@@ -115,6 +131,8 @@ tests/                     # pure logic and async persistence tests
 - discord.py 2.7.1
 - SQLAlchemy 2.0.51 async ORM
 - SQLite and aiosqlite
+- PostgreSQL and asyncpg
+- Google Gen AI SDK
 - pydantic-settings and `.env`
 - pytest, pytest-asyncio, and Ruff
 - Docker and GitHub Actions
@@ -178,6 +196,8 @@ Required:
 | `LOG_LEVEL` | No | `INFO` | Standard Python log level |
 | `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
 
+Daily summaries additionally use `DAILY_SUMMARY_ENABLED`, the configured guild/source/report channel IDs, `GEMINI_API_KEY`, and optional model, timezone, threshold, and retention settings. These settings enable only the summary feature; the bot itself does not require a production guild ID. Copy the exact keys from [.env.example](.env.example).
+
 No guild ID is required. Production always uses global commands and should leave `DISCORD_DEV_GUILD_ID` unset. When this optional value is set for local development, global sync still runs and a fast-updating copy is also synchronized to the specified test guild. `DISCORD_GUILD_ID`, `GUILD_ID`, and `TEST_GUILD_ID` are not used.
 
 ## Running Locally
@@ -208,7 +228,7 @@ python -m ruff check .
 python -m pytest
 ```
 
-Tests cover moderation normalization and matching, content classification and truncation, six-hour and overdue schedule math, source jump links, permissions, uniqueness, and privacy-minimized persistence.
+Tests cover exact and obfuscated moderation with false-positive guards, content classification and truncation, six-hour and overdue schedule math, permissions, guild isolation, daily-summary collection and startup backfill, Gemini error handling, and privacy-minimized persistence.
 
 ## CI
 

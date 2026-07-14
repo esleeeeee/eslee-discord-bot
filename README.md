@@ -8,7 +8,7 @@
 
 Discord에서 중요한 공지를 올려도 대화가 이어지면 금방 위로 밀려납니다. 고정 메시지는 직접 찾아봐야 해서 특히 모바일에서는 놓치기 쉽고, 투표나 첨부파일이 포함된 공지를 반복해서 올리면 투표 결과가 나뉘거나 같은 파일이 계속 재업로드되는 문제가 생깁니다.
 
-`eslee Discord Bot`은 이런 불편을 해결하기 위해 만든 소규모 서버용 관리 봇입니다. 중요한 메시지는 원본을 그대로 보존한 채 6시간마다 다시 알려주고, 서버에서 사용하면 안 되는 단어는 새 메시지와 수정된 메시지에서 실시간으로 감지합니다.
+`eslee Discord Bot`은 이런 불편을 해결하기 위해 만든 소규모 서버용 관리 봇입니다. 중요한 메시지는 원본을 그대로 보존한 채 6시간마다 다시 알려주고, 서버에서 사용하면 안 되는 단어는 새 메시지와 수정된 메시지에서 실시간으로 감지합니다. 선택한 채널의 하루 대화는 Gemini로 요약해 다음 날 자동 리포트로 남길 수 있습니다.
 
 ## 공지가 대화에 묻히지 않게 합니다
 
@@ -50,6 +50,8 @@ DB에 다음 전송 시각 저장
 
 기본 규칙은 부분 문자열 포함입니다. 예를 들어 `사과`를 금지어로 등록하면 `사과`, `청사과`, `사과나무`가 모두 감지됩니다. 한 메시지에 여러 금지어가 들어 있어도 메시지 삭제와 사용자 경고는 한 번만 수행하고, 감지된 모든 단어를 함께 기록합니다.
 
+등록된 금지어를 다시 입력하지 않아도 흔한 우회 표기를 함께 막습니다. `주식`이 등록되어 있다면 `주.식`, `주123식`, `주 식`, `주___식`, `주ㅋㅋ식`, zero-width 문자 삽입과 `ㅈㅜㅅㅣㄱ` 같은 자모 분리도 감지합니다. 금지어 글자 사이에서 공백·기호·숫자·짧은 `ㅋ/ㅎ` 반복처럼 제한된 방해 문자만 최대 8자까지 허용하며, `주말에 맛있는 식당에 갔다`처럼 실제 한글 단어가 사이에 있는 정상 문장은 연결해서 검사하지 않습니다. 기존 부분 문자열 규칙과 영문 대소문자 무시 동작은 그대로 유지합니다.
+
 ```text
 사용자가 메시지 전송 또는 수정
               ↓
@@ -74,6 +76,16 @@ DB에 다음 전송 시각 저장
 
 로그 채널이 설정되지 않았거나 접근할 수 없는 상태라도 금지어 감지와 메시지 삭제 기능 자체는 계속 동작합니다.
 
+## 선택한 채널의 하루 대화를 자동으로 요약합니다
+
+일일 요약은 환경변수로 지정한 한 서버의 한 텍스트 채널에만 선택적으로 적용됩니다. 봇의 공지·금지어·서버 설정은 계속 모든 설치 서버에서 `guild_id`별로 분리되어 동작합니다. 지정 채널에서는 사람이 작성한 텍스트만 수집하며 봇, Webhook, 시스템 메시지, 빈 메시지는 제외합니다.
+
+봇이 재시작되면 `Asia/Seoul` 기준 당일 00:00부터 현재까지 Discord 메시지 기록을 백그라운드로 다시 읽습니다. 이미 저장된 `message_id`는 건너뛰므로 여러 번 실행해도 중복되지 않고, 백필 권한이나 API 오류가 발생해도 기존 봇 기능은 계속 실행됩니다. 기본 3일이 지난 원문은 정리하고 생성된 리포트와 통계만 유지합니다.
+
+매일 00:02에 전날 대화를 집계해 최소 메시지·참여자 조건을 만족하면 Gemini로 전체 요약과 사용자별 요약을 생성합니다. 완료된 리포트 본문은 지정된 리포트 채널에 공개 게시하지만 `/하루요약 상태`, `/하루요약 오늘`, `/하루요약 어제`, `/하루요약 연결확인`의 진행·성공·실패 응답은 실행한 관리자에게만 보입니다. `연결확인`은 API 키 값이나 대화를 공개하지 않고 최소 요청 한 번으로 인증·모델 접근·응답 수신 여부만 확인합니다.
+
+필요한 환경변수와 권한, 개인정보 보관 및 장애 처리 방식은 [일일 대화 요약 운영 가이드](docs/daily-summary.md)에 정리되어 있습니다.
+
 ## 누가 명령을 사용할 수 있나요?
 
 설정을 바꾸거나 데이터를 추가·삭제하는 명령은 서버 소유자 또는 Discord의 Administrator 권한을 가진 사용자만 실행할 수 있습니다. 봇 자체에는 Administrator 권한이 필요하지 않습니다. `/금지어 목록`은 서버의 규칙을 누구나 확인할 수 있도록 일반 사용자에게도 열려 있습니다.
@@ -90,6 +102,10 @@ DB에 다음 전송 시각 저장
 | `/금지어 삭제` | 소유자/관리자 | 등록된 금지어 삭제 |
 | `/금지어 목록` | 모든 서버 사용자 | 현재 금지어 목록 확인 |
 | `/설정 로그채널` | 소유자/관리자 | 기존 채널을 관리자 감사 로그로 지정 |
+| `/하루요약 상태` | 설정 서버의 소유자/관리자 | 설정·수집량·최근 리포트 상태 확인 |
+| `/하루요약 오늘` | 설정 서버의 소유자/관리자 | 오늘 대화 미리보기 생성 |
+| `/하루요약 어제` | 설정 서버의 소유자/관리자 | 어제 리포트 수동 생성 |
+| `/하루요약 연결확인` | 설정 서버의 소유자/관리자 | Gemini 인증과 모델 접근 비공개 점검 |
 
 관리 명령의 성공·실패·권한 없음 응답은 해당 사용자에게만 보이는 ephemeral 메시지로 전달됩니다.
 
@@ -125,6 +141,14 @@ DISCORD_DEV_GUILD_ID=
 DATABASE_URL=sqlite+aiosqlite:///./data/eslee_bot.db
 LOG_LEVEL=INFO
 SCHEDULER_POLL_SECONDS=60
+
+# 선택: 특정 서버/채널의 일일 대화 요약
+DAILY_SUMMARY_ENABLED=false
+DAILY_SUMMARY_GUILD_ID=
+DAILY_SUMMARY_SOURCE_CHANNEL_ID=
+DAILY_SUMMARY_REPORT_CHANNEL_ID=
+GEMINI_API_KEY=
+DAILY_SUMMARY_AI_MODEL=gemini-3.5-flash
 ```
 
 토큰은 코드나 GitHub에 올리지 마세요. 이 저장소는 `.env`, SQLite DB, 실행 로그를 Git에서 제외합니다. 설정이 끝났다면 다음 명령으로 실행합니다.
@@ -160,13 +184,13 @@ Northflank의 Developer Sandbox는 현재 항상 켜지는 무료 서비스 2개
 
 Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 scheme은 중복 변경하지 않습니다. TLS Addon URI의 `sslmode=require`는 asyncpg가 지원하는 `ssl=require` 연결 옵션으로 변환되어 TLS 요구사항을 유지합니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
 
-Northflank 운영에 필요한 환경변수는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL` 두 개입니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 특정 서버 ID 환경변수는 필요하지 않습니다.
+Northflank 기본 운영에 필요한 환경변수는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL` 두 개입니다. 일일 요약을 사용할 때만 `DAILY_SUMMARY_*` 채널 설정과 `GEMINI_API_KEY`를 추가합니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 봇 전체를 특정 서버에 묶는 Guild ID 환경변수는 필요하지 않습니다.
 
 로컬 SQLite 데이터는 PostgreSQL로 자동 이전되지 않습니다. Northflank 배포가 정상적으로 Discord에 연결된 것을 확인한 뒤 로컬 봇을 종료하고, 같은 토큰으로 로컬과 Northflank에서 동시에 실행하지 마세요. 중복 리마인드를 피하기 위해 Northflank 인스턴스 수도 반드시 하나로 유지합니다.
 
 ## 코드 구조와 기술 선택
 
-Discord 이벤트 처리와 테스트 가능한 규칙을 분리했습니다. Cog는 Discord 명령과 이벤트를 받아 서비스에 전달하고, 서비스는 공지 분류·미리보기·금지어 매칭 같은 규칙을 처리합니다. Repository는 SQLAlchemy async session을 통해 선택된 DB와 통신하며, Scheduler는 DB의 `next_send_at`을 기준으로 전송할 공지를 찾습니다.
+Discord 이벤트 처리와 테스트 가능한 규칙을 분리했습니다. Cog는 Discord 명령과 이벤트를 받아 서비스에 전달하고, 서비스는 공지 분류·미리보기·우회 표기 금지어 매칭·일일 요약 같은 규칙을 처리합니다. Repository는 SQLAlchemy async session을 통해 선택된 DB와 통신하며, Scheduler는 공지 리마인드와 일일 리포트 실행 시각을 관리합니다.
 
 명령과 메시지 이벤트는 현재 Discord 서버의 `interaction.guild.id` 또는 `message.guild.id`를 DB 작업에 전달합니다. 서버 설정, 공지, 금지어, 위반 기록은 모두 `guild_id`를 저장하며 조회·삭제·수정도 같은 `guild_id` 범위 안에서만 수행합니다. 전체 서버의 마감 공지를 찾는 scheduler만 운영상 모든 행을 조회하고, 각 행에 저장된 서버와 채널로 개별 처리합니다.
 
@@ -182,20 +206,20 @@ Discord 명령·이벤트
  SQLite / PostgreSQL + Scheduler
 ```
 
-프로젝트는 Python 3.12, discord.py 2.7.1, SQLAlchemy 2.x async, 로컬 SQLite용 aiosqlite, 운영 PostgreSQL용 asyncpg, pydantic-settings를 사용합니다. Ruff와 pytest로 품질을 검사하고 GitHub Actions에서 같은 검사를 자동 실행합니다.
+프로젝트는 Python 3.12, discord.py 2.7.1, SQLAlchemy 2.x async, 로컬 SQLite용 aiosqlite, 운영 PostgreSQL용 asyncpg, pydantic-settings와 Google Gen AI SDK를 사용합니다. Ruff와 pytest로 품질을 검사하고 GitHub Actions에서 같은 검사를 자동 실행합니다.
 
 ```powershell
 python -m ruff check .
 python -m pytest
 ```
 
-현재 테스트는 금지어 정규화와 다중 감지, 권한, 공지 콘텐츠 분류, Poll 남은 시간, 장시간 다운타임 보정, 리마인드 교체, 원본 삭제 비활성화, DM 실패 fallback, DB 개인정보 정책을 검증합니다.
+현재 테스트는 금지어 정규화·우회 표기·오탐 방지·다중 감지, 권한, 공지 콘텐츠 분류, Poll 남은 시간, 장시간 다운타임 보정, 리마인드 교체, DM 실패 fallback, 서버별 DB 격리, 일일 요약 수집·백필·스케줄·Gemini 오류 처리와 개인정보 정책을 검증합니다.
 
 ## 현재 범위와 운영 시 참고사항
 
 v1은 소규모 서버에서 하나의 봇 프로세스를 실행하는 구성을 전제로 합니다. 여러 프로세스를 실행하면 PostgreSQL을 사용하더라도 Discord 리마인드가 중복될 수 있습니다. 자동 DB 스키마 마이그레이션은 아직 지원하지 않습니다. 모델을 직접 변경하기 전에는 DB를 백업하세요.
 
-향후에는 공지별 주기, 시작·종료일, 야간 알림 제한, 역할 기반 관리자, 반복 위반자 제재 같은 기능을 확장할 수 있습니다. 현재 버전은 실제 사용에 필요한 공지 재노출과 기본 모더레이션을 단순하고 안정적으로 제공하는 데 집중합니다.
+향후에는 공지별 주기, 시작·종료일, 야간 알림 제한, 역할 기반 관리자, 반복 위반자 제재 같은 기능을 확장할 수 있습니다. 현재 버전은 공지 재노출, 우회 표기를 포함한 기본 모더레이션, 선택 채널의 일일 대화 요약을 안정적으로 운영하는 데 집중합니다.
 
 ## License
 
