@@ -49,9 +49,13 @@ def fake_bot(
     config: DailySummaryConfig | None = None,
     provider: object | None = None,
     report_result: ReportRunResult | None = None,
+    republish_result: ReportRunResult | None = None,
 ) -> SimpleNamespace:
     report_service = SimpleNamespace(
-        generate=AsyncMock(return_value=report_result or ReportRunResult("completed", "done"))
+        generate=AsyncMock(return_value=report_result or ReportRunResult("completed", "done")),
+        republish=AsyncMock(
+            return_value=republish_result or ReportRunResult("completed", "republished")
+        ),
     )
     return SimpleNamespace(
         database=database,
@@ -125,6 +129,29 @@ async def test_yesterday_progress_and_result_are_ephemeral() -> None:
         request.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         request.followup.send.assert_awaited_once()
         assert request.followup.send.await_args.kwargs["ephemeral"] is True
+        bot.daily_summary.report_service.republish.assert_awaited_once()
+        bot.daily_summary.report_service.generate.assert_not_awaited()
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_yesterday_generates_only_when_no_completed_report_can_be_republished() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    bot = fake_bot(
+        database,
+        republish_result=ReportRunResult("unavailable", "missing"),
+    )
+    cog = DailySummaryCog(bot)  # type: ignore[arg-type]
+    request = interaction()
+    try:
+        with patch.dict(
+            DailySummaryCog._require_target.__globals__,
+            {"require_management_permission": AsyncMock(return_value=True)},
+        ):
+            await DailySummaryCog.yesterday.callback(cog, request)  # type: ignore[arg-type]
+
+        bot.daily_summary.report_service.republish.assert_awaited_once()
         assert bot.daily_summary.report_service.generate.await_args.kwargs == {
             "regenerate": True,
             "replace_preview": True,

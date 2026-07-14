@@ -82,10 +82,15 @@ class FakeProvider:
 class FakePublisher:
     def __init__(self) -> None:
         self.calls: list[tuple[list[object], list[int]]] = []
+        self.republish_calls: list[list[int]] = []
 
     async def publish(self, embeds, existing_message_ids):  # type: ignore[no-untyped-def]
         self.calls.append((embeds, list(existing_message_ids)))
         return [501 + index for index in range(len(embeds))]
+
+    async def republish(self, source_message_ids):  # type: ignore[no-untyped-def]
+        self.republish_calls.append(list(source_message_ids))
+        return [801 + index for index in range(len(source_message_ids))]
 
 
 class FailingPublisher:
@@ -259,6 +264,37 @@ async def test_scheduled_final_posts_fresh_messages_after_a_today_preview() -> N
             stored = await DailyReportRepository(session).get(100, report_date)
         assert stored is not None
         assert stored.status == "completed"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_report_is_republished_without_another_ai_request() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    provider = FakeProvider()
+    publisher = FakePublisher()
+    report_date = date(2026, 7, 13)
+    service = DailyReportService(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        provider,
+        publisher,  # type: ignore[arg-type]
+    )
+    try:
+        await insert_messages(database, report_date, {10: 5, 20: 5}, first_message_id=1)
+        generated = await service.generate(report_date)
+
+        republished = await service.republish(report_date)
+
+        assert generated.status == "completed"
+        assert republished.status == "completed"
+        assert provider.calls == 1
+        assert publisher.republish_calls == [[501, 502]]
+        async with database.session_factory() as session:
+            stored = await DailyReportRepository(session).get(100, report_date)
+        assert stored is not None
+        assert stored.discord_message_ids_json == "[501, 502]"
     finally:
         await database.close()
 

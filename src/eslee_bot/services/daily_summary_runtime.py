@@ -54,6 +54,10 @@ class DiscordPublishError(RuntimeError):
         self.message_ids = message_ids
 
 
+class ReportRepublishUnavailable(RuntimeError):
+    pass
+
+
 def _reply_to_message_id(message: discord.Message) -> int | None:
     reference = getattr(message, "reference", None)
     return getattr(reference, "message_id", None) if reference is not None else None
@@ -383,6 +387,31 @@ class DailyReportPublisher:
             raise DiscordPublishError(tracked_ids) from None
         return published_ids
 
+    async def republish(self, source_message_ids: list[int]) -> list[int]:
+        channel = await self._resolve_report_channel()
+        source_messages: list[discord.Message] = []
+        for message_id in source_message_ids:
+            try:
+                message = await channel.fetch_message(message_id)
+            except discord.NotFound:
+                raise ReportRepublishUnavailable from None
+            if not message.content and not message.embeds:
+                raise ReportRepublishUnavailable
+            source_messages.append(message)
+
+        published_ids: list[int] = []
+        try:
+            for source in source_messages:
+                message = await channel.send(
+                    content=source.content or None,
+                    embeds=source.embeds,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                published_ids.append(message.id)
+        except (discord.Forbidden, discord.HTTPException):
+            raise DiscordPublishError(published_ids) from None
+        return published_ids
+
     async def _resolve_report_channel(self) -> discord.TextChannel | discord.Thread:
         channel_id = cast(int, self.config.report_channel_id)
         channel = self.bot.get_channel(channel_id)
@@ -408,6 +437,40 @@ class DailyReportService:
         self.provider = provider
         self.publisher = publisher
         self._locks: dict[date, asyncio.Lock] = {}
+
+    async def republish(self, report_date: date) -> ReportRunResult:
+        lock = self._locks.setdefault(report_date, asyncio.Lock())
+        if lock.locked():
+            return ReportRunResult("duplicate", "같은 날짜의 리포트가 이미 처리 중입니다.")
+        async with lock:
+            guild_id = cast(int, self.config.guild_id)
+            async with self.bot.database.session_factory() as session:
+                report = await DailyReportRepository(session).get(guild_id, report_date)
+                if report is None or report.status != "completed":
+                    return ReportRunResult("unavailable", "재게시할 최종 리포트가 없습니다.")
+                source_message_ids = parse_message_ids(report.discord_message_ids_json)
+            if not source_message_ids:
+                return ReportRunResult("unavailable", "재게시할 최종 리포트가 없습니다.")
+            try:
+                published_ids = await self.publisher.republish(source_message_ids)
+            except asyncio.CancelledError:
+                raise
+            except ReportRepublishUnavailable:
+                return ReportRunResult("unavailable", "기존 리포트 메시지를 찾을 수 없습니다.")
+            except Exception as error:
+                logger.error(
+                    "Daily report republish failed safely (date=%s error_type=%s)",
+                    report_date,
+                    type(error).__name__,
+                )
+                return ReportRunResult("failed", "기존 리포트 재게시를 실패했습니다.")
+            logger.info(
+                "Daily report republished without AI (date=%s source_messages=%s new_messages=%s)",
+                report_date,
+                len(source_message_ids),
+                len(published_ids),
+            )
+            return ReportRunResult("completed", "기존 일일 리포트를 새 메시지로 게시했습니다.")
 
     async def generate(
         self,

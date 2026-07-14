@@ -202,11 +202,14 @@ class DailySummaryCog(commands.Cog):
         report_date = current_report_date(
             datetime.now(UTC), cast(Any, config.timezone)
         ) - timedelta(days=1)
-        result = await cast(Any, self.bot.daily_summary.report_service).generate(
-            report_date,
-            regenerate=True,
-            replace_preview=True,
-        )
+        report_service = cast(Any, self.bot.daily_summary.report_service)
+        result = await report_service.republish(report_date)
+        if result.status == "unavailable":
+            result = await report_service.generate(
+                report_date,
+                regenerate=True,
+                replace_preview=True,
+            )
         await interaction.followup.send(
             _result_message(result.status, result.detail), ephemeral=True
         )
