@@ -105,7 +105,7 @@ Discord-specific network work stays in Cogs and the scheduler. Text normalizatio
 | `/설정 로그채널` | Owner/Admin | Select an existing audit-log channel |
 | `/하루요약 상태` | Configured guild Owner/Admin | Inspect summary configuration and status |
 | `/하루요약 오늘` | Configured guild Owner/Admin | Generate today's private preview |
-| `/하루요약 어제` | Configured guild Owner/Admin | Generate yesterday's report manually |
+| `/하루요약 어제` | Configured guild Owner/Admin | Rebuild the previous 06:00–06:00 window as a new report |
 | `/하루요약 연결확인` | Configured guild Owner/Admin | Privately verify Gemini model access |
 
 Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses DM then a temporary channel fallback.

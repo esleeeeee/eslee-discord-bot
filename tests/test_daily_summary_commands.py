@@ -120,13 +120,13 @@ async def test_yesterday_progress_and_result_are_ephemeral() -> None:
             DailySummaryCog._require_target.__globals__,
             {"require_management_permission": AsyncMock(return_value=True)},
         ):
-            await DailySummaryCog.yesterday.callback(cog, request, False)  # type: ignore[arg-type]
+            await DailySummaryCog.yesterday.callback(cog, request)  # type: ignore[arg-type]
 
         request.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         request.followup.send.assert_awaited_once()
         assert request.followup.send.await_args.kwargs["ephemeral"] is True
         assert bot.daily_summary.report_service.generate.await_args.kwargs == {
-            "regenerate": False,
+            "regenerate": True,
             "replace_preview": True,
         }
     finally:

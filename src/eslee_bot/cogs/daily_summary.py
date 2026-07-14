@@ -194,8 +194,7 @@ class DailySummaryCog(commands.Cog):
         )
 
     @summary_group.command(name="어제", description="어제의 일일 리포트를 생성합니다.")
-    @app_commands.describe(재생성="이미 생성된 어제 리포트를 다시 생성합니다.")
-    async def yesterday(self, interaction: discord.Interaction, 재생성: bool = False) -> None:
+    async def yesterday(self, interaction: discord.Interaction) -> None:
         if not await self._require_target(interaction, require_enabled=True):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -205,7 +204,7 @@ class DailySummaryCog(commands.Cog):
         ) - timedelta(days=1)
         result = await cast(Any, self.bot.daily_summary.report_service).generate(
             report_date,
-            regenerate=재생성,
+            regenerate=True,
             replace_preview=True,
         )
         await interaction.followup.send(
