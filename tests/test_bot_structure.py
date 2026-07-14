@@ -8,6 +8,24 @@ from eslee_bot.config import Settings
 
 
 @pytest.mark.asyncio
+async def test_invalid_daily_summary_settings_do_not_prevent_bot_construction() -> None:
+    bot = EsleeBot(
+        Settings(
+            discord_token="test-token",
+            database_url="sqlite+aiosqlite:///:memory:",
+            daily_summary_enabled=True,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+    )
+    try:
+        assert bot.daily_summary.config.enabled is False
+        assert bot.daily_summary.collector is None
+        assert bot.daily_summary.report_service is None
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_extensions_commands_and_intents_load_without_discord_connection() -> None:
     bot = EsleeBot(
         Settings(
@@ -25,6 +43,7 @@ async def test_extensions_commands_and_intents_load_without_discord_connection()
             "공지",
             "금지어",
             "설정",
+            "하루요약",
             "공지로 등록",
         ]
         assert bot.tree.get_commands(guild=discord.Object(id=123456789012345678)) == []

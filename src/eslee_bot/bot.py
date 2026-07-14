@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from eslee_bot.config import Settings
 from eslee_bot.database import Database
+from eslee_bot.services.daily_summary_runtime import DailySummaryRuntime
 from eslee_bot.tasks.announcement_scheduler import AnnouncementScheduler
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ EXTENSIONS = (
     "eslee_bot.cogs.announcements",
     "eslee_bot.cogs.moderation",
     "eslee_bot.cogs.settings",
+    "eslee_bot.cogs.daily_summary",
 )
 
 
@@ -29,6 +31,7 @@ class EsleeBot(commands.Bot):
         self.settings = settings
         self.database = Database(settings.database_url)
         self.announcement_scheduler = AnnouncementScheduler(self, settings.scheduler_poll_seconds)
+        self.daily_summary = DailySummaryRuntime(self, settings.get_daily_summary_config())
         self.tree.on_error = self._on_app_command_error
 
     async def setup_hook(self) -> None:
@@ -61,6 +64,7 @@ class EsleeBot(commands.Bot):
             len(self.guilds),
         )
         self.announcement_scheduler.start()
+        self.daily_summary.start()
 
     async def _on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -76,6 +80,7 @@ class EsleeBot(commands.Bot):
             logger.warning("Could not send application command error response")
 
     async def close(self) -> None:
+        await self.daily_summary.stop()
         await self.announcement_scheduler.stop()
         await self.database.close()
         await super().close()
