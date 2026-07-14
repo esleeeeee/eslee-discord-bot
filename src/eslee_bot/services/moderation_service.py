@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
+from functools import lru_cache
 
-from eslee_bot.utils.text import normalize_forbidden_word, normalize_text, truncate_text
+from eslee_bot.utils.text import normalize_for_matching, normalize_forbidden_word, truncate_text
 
 MAX_BATCH_WORDS = 500
+MAX_OBFUSCATION_GAP = 8
+_SHORT_REACTION_FILLERS = frozenset(normalize_for_matching("ㅋㅎ"))
 
 
 def parse_forbidden_word_batch(
@@ -31,19 +35,69 @@ def parse_forbidden_word_batch(
 
 def find_forbidden_words(message: str, forbidden_words: Iterable[tuple[str, str]]) -> list[str]:
     """Return every matching display word once, preserving repository order."""
-    normalized_message = normalize_text(message)
+    normalized_message = normalize_for_matching(message)
     matches: list[str] = []
     seen: set[str] = set()
     for display_word, normalized_word in forbidden_words:
+        match_key = _forbidden_word_match_key(normalized_word)
         is_new_match = (
-            normalized_word
-            and normalized_word in normalized_message
-            and normalized_word not in seen
+            match_key
+            and match_key not in seen
+            and _contains_forbidden_word(normalized_message, match_key)
         )
         if is_new_match:
             matches.append(display_word)
-            seen.add(normalized_word)
+            seen.add(match_key)
     return matches
+
+
+@lru_cache(maxsize=4096)
+def _forbidden_word_match_key(normalized_word: str) -> str:
+    return normalize_for_matching(normalized_word)
+
+
+def _contains_forbidden_word(message: str, forbidden_word: str) -> bool:
+    if forbidden_word in message:
+        return True
+    if len(forbidden_word) < 2:
+        return False
+
+    search_from = 0
+    while True:
+        start = message.find(forbidden_word[0], search_from)
+        if start < 0:
+            return False
+        cursor = start + 1
+        matched = True
+        for expected in forbidden_word[1:]:
+            if cursor < len(message) and message[cursor] == expected:
+                cursor += 1
+                continue
+
+            gap_length = 0
+            while (
+                cursor < len(message)
+                and gap_length < MAX_OBFUSCATION_GAP
+                and message[cursor] != expected
+                and _is_obfuscation_filler(message[cursor])
+            ):
+                cursor += 1
+                gap_length += 1
+            if cursor >= len(message) or message[cursor] != expected:
+                matched = False
+                break
+            cursor += 1
+
+        if matched:
+            return True
+        search_from = start + 1
+
+
+def _is_obfuscation_filler(character: str) -> bool:
+    if character in _SHORT_REACTION_FILLERS or character.isspace():
+        return True
+    category = unicodedata.category(character)
+    return category[0] in {"M", "P", "S"} or category in {"Cc", "Cf", "Nd"}
 
 
 def build_user_warning(matched_words: Iterable[str]) -> str:

@@ -19,7 +19,13 @@ class FakeBot:
         return None
 
 
-def make_message(*, dm_fails: bool = False, bot_author: bool = False):
+def make_message(
+    *,
+    dm_fails: bool = False,
+    bot_author: bool = False,
+    content: str = "청사과와 바나나",
+    guild_id: int = 1,
+):
     author = SimpleNamespace(
         id=2,
         bot=bot_author,
@@ -30,10 +36,10 @@ def make_message(*, dm_fails: bool = False, bot_author: bool = False):
     )
     channel = SimpleNamespace(id=3, send=AsyncMock())
     return SimpleNamespace(
-        guild=SimpleNamespace(id=1),
+        guild=SimpleNamespace(id=guild_id),
         webhook_id=None,
         author=author,
-        content="청사과와 바나나",
+        content=content,
         channel=channel,
         delete=AsyncMock(),
     )
@@ -62,6 +68,72 @@ async def test_moderation_deletes_warns_and_persists_one_violation() -> None:
             assert "사과" in records[0].matched_words
             assert "바나나" in records[0].matched_words
             assert not hasattr(records[0], "message_content")
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_obfuscated_match_persists_original_registered_word() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    try:
+        async with database.session_factory() as session:
+            await ForbiddenWordRepository(session).add(
+                1, "주식", normalize_forbidden_word("주식"), 99
+            )
+        message = make_message(content="주@식 하지마라")
+        cog = ModerationCog(FakeBot(database))  # type: ignore[arg-type]
+
+        await cog._moderate_message(message)
+
+        message.delete.assert_awaited_once()
+        async with database.session_factory() as session:
+            records = list(await session.scalars(select(ModerationViolation)))
+        assert len(records) == 1
+        assert records[0].matched_words == '["주식"]'
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_forbidden_word_changes_apply_immediately_without_cross_guild_leakage() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    cog = ModerationCog(FakeBot(database))  # type: ignore[arg-type]
+    try:
+        before_add = make_message(content="주@식")
+        await cog._moderate_message(before_add)
+        before_add.delete.assert_not_awaited()
+
+        async with database.session_factory() as session:
+            repository = ForbiddenWordRepository(session)
+            added, skipped = await repository.add_many(
+                1,
+                [
+                    ("주식", normalize_forbidden_word("주식")),
+                    ("비트코인", normalize_forbidden_word("비트코인")),
+                ],
+                99,
+            )
+        assert added == ["주식", "비트코인"]
+        assert skipped == []
+
+        after_add = make_message(content="주@식")
+        other_guild = make_message(content="주@식", guild_id=2)
+        await cog._moderate_message(after_add)
+        await cog._moderate_message(other_guild)
+        after_add.delete.assert_awaited_once()
+        other_guild.delete.assert_not_awaited()
+
+        async with database.session_factory() as session:
+            deleted = await ForbiddenWordRepository(session).delete(
+                1, normalize_forbidden_word("주식")
+            )
+        assert deleted is True
+
+        after_delete = make_message(content="주@식")
+        await cog._moderate_message(after_delete)
+        after_delete.delete.assert_not_awaited()
     finally:
         await database.close()
 
