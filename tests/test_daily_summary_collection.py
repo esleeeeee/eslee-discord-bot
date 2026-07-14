@@ -24,7 +24,7 @@ def summary_config() -> DailySummaryConfig:
         report_channel_id=300,
         gemini_api_key="test-key",
         timezone=ZoneInfo("Asia/Seoul"),
-        run_time=datetime.strptime("00:02", "%H:%M").time(),
+        run_time=datetime.strptime("06:01", "%H:%M").time(),
     )
 
 
@@ -148,7 +148,7 @@ async def test_message_update_delete_and_reply_relationship() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_backfill_uses_seoul_midnight_and_is_idempotent() -> None:
+async def test_startup_backfill_uses_seoul_0600_boundary_and_is_idempotent() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     collector = DailySummaryCollector(FakeBot(database), summary_config())  # type: ignore[arg-type]

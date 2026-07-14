@@ -12,7 +12,7 @@ from eslee_bot.database.repositories import (
     DailyReportRepository,
     DailySummaryMessageRepository,
 )
-from eslee_bot.services.daily_summary import current_day_window_utc
+from eslee_bot.services.daily_summary import current_day_window_utc, current_report_date
 from eslee_bot.services.daily_summary_ai import (
     GeminiConnectionResult,
     GeminiSummaryProvider,
@@ -166,7 +166,7 @@ class DailySummaryCog(commands.Cog):
             value=f"{config.raw_retention_days}일",
             inline=True,
         )
-        embed.add_field(name="오늘 저장 메시지", value=f"{today_count:,}개", inline=True)
+        embed.add_field(name="현재 집계 구간 메시지", value=f"{today_count:,}개", inline=True)
         embed.add_field(name="최근 리포트", value=latest_status, inline=False)
         if config.validation_errors:
             embed.add_field(
@@ -183,7 +183,7 @@ class DailySummaryCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         config = self.bot.daily_summary.config
-        report_date = datetime.now(UTC).astimezone(cast(Any, config.timezone)).date()
+        report_date = current_report_date(datetime.now(UTC), cast(Any, config.timezone))
         result = await cast(Any, self.bot.daily_summary.report_service).generate(
             report_date,
             regenerate=재생성,
@@ -200,9 +200,9 @@ class DailySummaryCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         config = self.bot.daily_summary.config
-        report_date = datetime.now(UTC).astimezone(cast(Any, config.timezone)).date() - timedelta(
-            days=1
-        )
+        report_date = current_report_date(
+            datetime.now(UTC), cast(Any, config.timezone)
+        ) - timedelta(days=1)
         result = await cast(Any, self.bot.daily_summary.report_service).generate(
             report_date,
             regenerate=재생성,

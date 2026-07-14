@@ -23,7 +23,7 @@ class DailySummaryConfig:
     ai_model: str = "gemini-3.5-flash"
     timezone_name: str = "Asia/Seoul"
     timezone: ZoneInfo | None = None
-    run_time_text: str = "00:02"
+    run_time_text: str = "06:01"
     run_time: time | None = None
     raw_retention_days: int = 3
     min_total_messages: int = 10
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     daily_summary_ai_model: str = "gemini-3.5-flash"
     daily_summary_timezone: str = "Asia/Seoul"
-    daily_summary_run_time: str = "00:02"
+    daily_summary_run_time: str = "06:01"
     daily_summary_raw_retention_days: int = Field(default=3, ge=1, le=30)
     daily_summary_min_total_messages: int = Field(default=10, ge=1)
     daily_summary_min_participants: int = Field(default=2, ge=1)

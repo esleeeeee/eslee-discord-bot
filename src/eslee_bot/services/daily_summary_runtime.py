@@ -287,6 +287,8 @@ def build_report_embeds(
     stats: SummaryStats,
     generated: GeneratedSummary,
     display_names: dict[int, str],
+    *,
+    preview: bool = False,
 ) -> list[discord.Embed]:
     overview = discord.Embed(
         title=f"📅 {report_date.year}년 {report_date.month}월 {report_date.day}일 서버 일일 리포트",
@@ -304,6 +306,13 @@ def build_report_embeds(
         name="🏆 가장 많이 말한 사람",
         value=f"{stats.top_user_display_name} ({stats.top_user_message_count:,}개)",
         inline=False,
+    )
+    overview.set_footer(
+        text=(
+            "오늘 06시부터 현재까지의 미리보기 기록입니다."
+            if preview
+            else "전날 06시부터 오늘 06시까지의 기록입니다."
+        )
     )
 
     entries = [
@@ -431,6 +440,7 @@ class DailyReportService:
         source_channel_id = cast(int, self.config.source_channel_id)
         report_channel_id = cast(int, self.config.report_channel_id)
         timezone = cast(Any, self.config.timezone)
+        start, end = day_bounds_utc(report_date, timezone)
         async with self.bot.database.session_factory() as session:
             reports = DailyReportRepository(session)
             try:
@@ -441,6 +451,7 @@ class DailyReportService:
                     report_channel_id=report_channel_id,
                     regenerate=regenerate,
                     replace_preview=replace_preview,
+                    replace_if_updated_before=end,
                 )
             except DuplicateReportError as error:
                 return ReportRunResult("duplicate", str(error))
@@ -449,7 +460,6 @@ class DailyReportService:
             # editing an older preview message in place.
             publish_existing_ids = [] if replace_preview else existing_ids
 
-        start, end = day_bounds_utc(report_date, timezone)
         async with self.bot.database.session_factory() as session:
             messages = await DailySummaryMessageRepository(session).list_between(
                 guild_id,
@@ -491,7 +501,13 @@ class DailyReportService:
         try:
             generated = await self.provider.summarize(messages, targets, timezone=timezone)
             display_names = {target.user_id: target.display_name for target in targets}
-            embeds = build_report_embeds(report_date, stats, generated, display_names)
+            embeds = build_report_embeds(
+                report_date,
+                stats,
+                generated,
+                display_names,
+                preview=preview,
+            )
             published_ids = await self.publisher.publish(embeds, publish_existing_ids)
             async with self.bot.database.session_factory() as session:
                 stored = await DailyReportRepository(session).get(guild_id, report_date)

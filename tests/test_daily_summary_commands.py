@@ -28,7 +28,7 @@ def summary_config(
         gemini_api_key=api_key,
         ai_model=model,
         timezone=ZoneInfo("Asia/Seoul"),
-        run_time=time(0, 2),
+        run_time=time(6, 1),
     )
 
 

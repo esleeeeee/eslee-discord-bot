@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 from eslee_bot.utils.time import ensure_utc
 
+REPORT_WINDOW_START = time(6)
+
 
 class SummaryMessage(Protocol):
     message_id: int
@@ -51,15 +53,26 @@ class GeneratedSummary:
 
 
 def day_bounds_utc(report_date: date, timezone: ZoneInfo) -> tuple[datetime, datetime]:
-    local_start = datetime.combine(report_date, time.min, tzinfo=timezone)
-    local_end = datetime.combine(report_date + timedelta(days=1), time.min, tzinfo=timezone)
+    local_start = datetime.combine(report_date, REPORT_WINDOW_START, tzinfo=timezone)
+    local_end = datetime.combine(
+        report_date + timedelta(days=1),
+        REPORT_WINDOW_START,
+        tzinfo=timezone,
+    )
     return local_start.astimezone(UTC), local_end.astimezone(UTC)
+
+
+def current_report_date(now: datetime, timezone: ZoneInfo) -> date:
+    local_now = ensure_utc(now).astimezone(timezone)
+    report_date = local_now.date()
+    if local_now.time().replace(tzinfo=None) < REPORT_WINDOW_START:
+        report_date -= timedelta(days=1)
+    return report_date
 
 
 def current_day_window_utc(now: datetime, timezone: ZoneInfo) -> tuple[datetime, datetime]:
     current = ensure_utc(now)
-    local_date = current.astimezone(timezone).date()
-    start, _ = day_bounds_utc(local_date, timezone)
+    start, _ = day_bounds_utc(current_report_date(current, timezone), timezone)
     return start, current
 
 

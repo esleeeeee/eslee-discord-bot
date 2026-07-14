@@ -37,7 +37,7 @@ Moderation follows the same practical approach: matching is predictable, warning
 - New-message and uncached raw message-edit inspection
 - Multiple matches handled as one deletion, one warning, and one violation
 - Other bots and webhooks ignored by default
-- Optional daily summary collection, Seoul-midnight startup backfill, and Gemini reports
+- Optional daily summary collection, Seoul 06:00 startup backfill, and Gemini reports
 - Server owner or Discord Administrator management policy
 
 ## Announcement Reminder System
@@ -66,7 +66,7 @@ Messages from bots, the bot itself, and webhooks are ignored. Both newly created
 
 Daily summaries are opt-in and scoped to one configured guild and text channel; announcements, moderation, and server settings remain public multi-server features isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
 
-After startup, a background backfill reads Discord history from midnight in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 00:02, the previous day is aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. Raw text is retained for three days by default.
+After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 06:01, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. Raw text is retained for three days by default.
 
 The `/하루요약 상태`, `오늘`, `어제`, and `연결확인` command responses are private to the administrator who invoked them. The connection check sends one minimal Gemini request without revealing the API key or changing report state. Only the completed report body is posted publicly. See [the daily-summary operations guide](docs/daily-summary.md) for configuration, privacy, and failure handling.
 

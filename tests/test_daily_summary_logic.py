@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from eslee_bot.services.daily_summary import (
     calculate_stats,
+    current_report_date,
     day_bounds_utc,
     scheduled_report_date,
     select_summary_targets,
@@ -48,16 +49,24 @@ def make_message(
 def test_asia_seoul_day_bounds_use_the_correct_utc_boundary() -> None:
     start, end = day_bounds_utc(date(2026, 7, 14), KST)
 
-    assert start == datetime(2026, 7, 13, 15, tzinfo=UTC)
-    assert end == datetime(2026, 7, 14, 15, tzinfo=UTC)
+    assert start == datetime(2026, 7, 13, 21, tzinfo=UTC)
+    assert end == datetime(2026, 7, 14, 21, tzinfo=UTC)
 
 
-def test_scheduled_report_date_changes_at_0002_seoul() -> None:
-    before = datetime(2026, 7, 13, 15, 1, 59, tzinfo=UTC)
-    at_run_time = datetime(2026, 7, 13, 15, 2, tzinfo=UTC)
+def test_current_report_date_changes_at_0600_seoul() -> None:
+    before_boundary = datetime(2026, 7, 13, 20, 59, 59, tzinfo=UTC)
+    at_boundary = datetime(2026, 7, 13, 21, tzinfo=UTC)
 
-    assert scheduled_report_date(before, KST, time(0, 2)) is None
-    assert scheduled_report_date(at_run_time, KST, time(0, 2)) == date(2026, 7, 13)
+    assert current_report_date(before_boundary, KST) == date(2026, 7, 13)
+    assert current_report_date(at_boundary, KST) == date(2026, 7, 14)
+
+
+def test_scheduled_report_date_changes_at_0601_seoul() -> None:
+    before = datetime(2026, 7, 13, 21, 0, 59, tzinfo=UTC)
+    at_run_time = datetime(2026, 7, 13, 21, 1, tzinfo=UTC)
+
+    assert scheduled_report_date(before, KST, time(6, 1)) is None
+    assert scheduled_report_date(at_run_time, KST, time(6, 1)) == date(2026, 7, 13)
 
 
 def test_stats_use_earliest_hour_and_first_seen_user_for_ties() -> None:

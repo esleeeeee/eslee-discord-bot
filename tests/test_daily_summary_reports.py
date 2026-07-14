@@ -38,7 +38,7 @@ def summary_config(**overrides: object) -> DailySummaryConfig:
         "report_channel_id": 300,
         "gemini_api_key": "test-key",
         "timezone": KST,
-        "run_time": datetime.strptime("00:02", "%H:%M").time(),
+        "run_time": datetime.strptime("06:01", "%H:%M").time(),
         "min_total_messages": 10,
         "min_participants": 2,
         "min_user_messages": 3,
@@ -264,6 +264,33 @@ async def test_scheduled_final_posts_fresh_messages_after_a_today_preview() -> N
 
 
 @pytest.mark.asyncio
+async def test_scheduler_replaces_a_legacy_final_created_before_0600_window_end() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    provider = FakeProvider()
+    publisher = FakePublisher()
+    report_date = datetime.now(KST).date()
+    service = DailyReportService(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        provider,
+        publisher,  # type: ignore[arg-type]
+    )
+    try:
+        await insert_messages(database, report_date, {10: 5, 20: 5}, first_message_id=1)
+
+        legacy_final = await service.generate(report_date)
+        replacement = await service.generate(report_date, replace_preview=True)
+
+        assert legacy_final.status == "completed"
+        assert replacement.status == "completed"
+        assert provider.calls == 2
+        assert publisher.calls[1][1] == []
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_discord_publish_failure_is_persisted_without_completed_status() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
@@ -312,6 +339,22 @@ def test_report_embeds_split_long_personal_summaries_within_discord_limit() -> N
 
     assert len(embeds) >= 4
     assert all(len(embed.description or "") <= 3900 for embed in embeds)
+    assert embeds[0].footer.text == "전날 06시부터 오늘 06시까지의 기록입니다."
+
+
+def test_preview_embed_identifies_the_in_progress_0600_window() -> None:
+    stats = SummaryStats(10, 2, 8, 1, "은성", 6)
+    generated = GeneratedSummary("미리보기", (), 1, False)
+
+    embeds = build_report_embeds(
+        date(2026, 7, 15),
+        stats,
+        generated,
+        {},
+        preview=True,
+    )
+
+    assert embeds[0].footer.text == "오늘 06시부터 현재까지의 미리보기 기록입니다."
 
 
 class FakeReportService:
@@ -327,10 +370,10 @@ class FakeReportService:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_cleans_only_expired_raw_messages_and_runs_at_0002() -> None:
+async def test_scheduler_cleans_only_expired_raw_messages_and_runs_at_0601() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
-    now = datetime(2026, 7, 14, 0, 2, tzinfo=KST).astimezone(UTC)
+    now = datetime(2026, 7, 14, 6, 1, tzinfo=KST).astimezone(UTC)
     report_service = FakeReportService()
     scheduler = DailySummaryScheduler(
         FakeBot(database),  # type: ignore[arg-type]
@@ -348,7 +391,7 @@ async def test_scheduler_cleans_only_expired_raw_messages_and_runs_at_0002() -> 
                 "author_display_name": "old",
                 "content": "old",
                 "reply_to_message_id": None,
-                "created_at": datetime(2026, 7, 10, 14, 59, tzinfo=UTC),
+                "created_at": datetime(2026, 7, 10, 20, 59, tzinfo=UTC),
             },
             {
                 "guild_id": 100,
@@ -358,7 +401,7 @@ async def test_scheduler_cleans_only_expired_raw_messages_and_runs_at_0002() -> 
                 "author_display_name": "keep",
                 "content": "keep",
                 "reply_to_message_id": None,
-                "created_at": datetime(2026, 7, 10, 15, tzinfo=UTC),
+                "created_at": datetime(2026, 7, 10, 21, tzinfo=UTC),
             },
         ]
         async with database.session_factory() as session:

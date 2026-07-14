@@ -16,6 +16,7 @@ from eslee_bot.database.models import (
     GuildSettings,
     ModerationViolation,
 )
+from eslee_bot.utils.time import ensure_utc
 
 
 class DuplicateRecordError(ValueError):
@@ -391,6 +392,7 @@ class DailyReportRepository:
         report_channel_id: int,
         regenerate: bool,
         replace_preview: bool = False,
+        replace_if_updated_before: datetime | None = None,
     ) -> DailyReport:
         report = await self.get(guild_id, report_date)
         if report is None:
@@ -409,7 +411,16 @@ class DailyReportRepository:
                 raise DuplicateReportError("Daily report is already being generated") from error
             await self.session.refresh(report)
             return report
-        if not regenerate and not (replace_preview and report.status.startswith("preview_")):
+        replace_outdated_final = bool(
+            replace_preview
+            and replace_if_updated_before is not None
+            and report.status in {"completed", "skipped", "failed"}
+            and ensure_utc(report.updated_at) < replace_if_updated_before
+        )
+        if not regenerate and not (
+            (replace_preview and report.status.startswith("preview_"))
+            or replace_outdated_final
+        ):
             raise DuplicateReportError(f"Daily report already has status {report.status}")
         report.status = "generating"
         report.error_message = None

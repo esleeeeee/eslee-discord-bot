@@ -127,12 +127,13 @@ def test_valid_daily_summary_config_is_parsed_without_exposing_secret() -> None:
     assert config.report_channel_id == 300
     assert config.timezone is not None
     assert config.run_time is not None
+    assert config.run_time_text == "06:01"
     assert "secret-value" not in repr(config)
 
 
 @pytest.mark.parametrize(
     ("timezone", "run_time"),
-    [("Invalid/Zone", "00:02"), ("Asia/Seoul", "25:99")],
+    [("Invalid/Zone", "06:01"), ("Asia/Seoul", "25:99")],
 )
 def test_invalid_daily_summary_clock_config_disables_feature(timezone: str, run_time: str) -> None:
     settings = Settings(
