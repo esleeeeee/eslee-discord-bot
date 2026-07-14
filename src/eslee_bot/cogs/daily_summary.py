@@ -13,6 +13,10 @@ from eslee_bot.database.repositories import (
     DailySummaryMessageRepository,
 )
 from eslee_bot.services.daily_summary import current_day_window_utc
+from eslee_bot.services.daily_summary_ai import (
+    GeminiConnectionResult,
+    GeminiSummaryProvider,
+)
 from eslee_bot.utils.permissions import require_management_permission
 
 if TYPE_CHECKING:
@@ -207,6 +211,68 @@ class DailySummaryCog(commands.Cog):
             _result_message(result.status, result.detail), ephemeral=True
         )
 
+    @summary_group.command(
+        name="연결확인",
+        description="Gemini API 인증과 모델 연결을 비공개로 확인합니다.",
+    )
+    async def connection_check(self, interaction: discord.Interaction) -> None:
+        if not await self._require_target(interaction, require_enabled=False):
+            return
+        config = self.bot.daily_summary.config
+        api_key = (config.gemini_api_key or "").strip()
+        model = config.ai_model.strip()
+        if not api_key:
+            result = GeminiConnectionResult(
+                False,
+                "GEMINI_API_KEY가 설정되어 있지 않습니다.",
+            )
+            await interaction.response.send_message(
+                embed=_connection_embed(False, model, result),
+                ephemeral=True,
+            )
+            return
+        if not model:
+            result = GeminiConnectionResult(
+                False,
+                "DAILY_SUMMARY_AI_MODEL이 설정되어 있지 않습니다.",
+            )
+            await interaction.response.send_message(
+                embed=_connection_embed(True, model, result),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        provider = self.bot.daily_summary.provider
+        temporary_provider: GeminiSummaryProvider | None = None
+        try:
+            if provider is None:
+                temporary_provider = GeminiSummaryProvider(api_key, model)
+                provider = temporary_provider
+            result = await provider.check_connection()
+        except Exception as error:
+            logger.error(
+                "Gemini connection command failed safely (error_type=%s)",
+                type(error).__name__,
+            )
+            result = GeminiConnectionResult(
+                False,
+                f"Gemini API 연결 확인 중 오류가 발생했습니다. ({type(error).__name__})",
+            )
+        finally:
+            if temporary_provider is not None:
+                try:
+                    await temporary_provider.close()
+                except Exception as error:
+                    logger.warning(
+                        "Temporary Gemini client cleanup failed (error_type=%s)",
+                        type(error).__name__,
+                    )
+        await interaction.followup.send(
+            embed=_connection_embed(True, model, result),
+            ephemeral=True,
+        )
+
     async def _require_target(
         self,
         interaction: discord.Interaction,
@@ -239,6 +305,29 @@ def _result_message(status: str, detail: str) -> str:
         "failed": "🚫",
     }.get(status, "ℹ️")
     return f"{prefix} {detail}"
+
+
+def _connection_embed(
+    api_key_configured: bool,
+    model: str,
+    result: GeminiConnectionResult,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔌 Gemini API 연결 확인",
+        color=discord.Color.green() if result.ok else discord.Color.red(),
+    )
+    embed.add_field(
+        name="API 키",
+        value="설정됨" if api_key_configured else "미설정",
+        inline=True,
+    )
+    embed.add_field(name="AI 모델", value=model or "미설정", inline=True)
+    embed.add_field(
+        name="결과",
+        value=("✅ " if result.ok else "🚫 ") + result.message,
+        inline=False,
+    )
+    return embed
 
 
 async def setup(bot: EsleeBot) -> None:

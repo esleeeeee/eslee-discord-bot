@@ -55,6 +55,15 @@ async def test_extensions_commands_and_intents_load_without_discord_connection()
             command for command in bot.tree.get_commands() if command.name == "금지어"
         )
         assert "일괄추가" in {command.name for command in forbidden_group.commands}
+        summary_group = next(
+            command for command in bot.tree.get_commands() if command.name == "하루요약"
+        )
+        assert {command.name for command in summary_group.commands} == {
+            "상태",
+            "오늘",
+            "어제",
+            "연결확인",
+        }
     finally:
         await bot.close()
 

@@ -217,3 +217,83 @@ async def test_large_input_uses_chunk_summary_then_final_consolidation() -> None
     assert result.used_chunk_fallback is True
     assert result.api_request_count == 2
     assert generate.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_connection_check_uses_one_minimal_request() -> None:
+    client, generate = fake_client(SimpleNamespace(text="OK"))
+    provider = GeminiSummaryProvider("secret-key", "gemini-3.5-flash", client=client)
+
+    result = await provider.check_connection()
+
+    assert result.ok is True
+    assert result.message == "Gemini API 연결 정상"
+    assert generate.await_count == 1
+    call = generate.await_args
+    assert call.kwargs["model"] == "gemini-3.5-flash"
+    assert call.kwargs["contents"] == "Reply with only OK."
+    assert call.kwargs["config"].max_output_tokens == 32
+    assert call.kwargs["config"].thinking_config.thinking_level.value == "MINIMAL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_message"),
+    [
+        (400, "모델 설정"),
+        (401, "API 키가 유효하지"),
+        (403, "사용 권한이 거부"),
+        (404, "모델을 찾을 수 없거나"),
+        (429, "한도 또는 할당량"),
+        (503, "일시적인 오류"),
+    ],
+)
+async def test_connection_check_explains_api_status_without_retrying(
+    status_code: int,
+    expected_message: str,
+) -> None:
+    client, generate = fake_client(errors.APIError(status_code, {"message": "must not be shown"}))
+    provider = GeminiSummaryProvider("secret-key", "gemini-3.5-flash", client=client)
+
+    result = await provider.check_connection()
+
+    assert result.ok is False
+    assert result.status_code == status_code
+    assert expected_message in result.message
+    assert "must not be shown" not in result.message
+    assert "secret-key" not in result.message
+    assert generate.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (TimeoutError("slow"), "시간이 초과"),
+        (ConnectionError("offline"), "네트워크 상태"),
+    ],
+)
+async def test_connection_check_explains_transport_failure(
+    error: BaseException,
+    expected_message: str,
+) -> None:
+    client, generate = fake_client(error)
+    provider = GeminiSummaryProvider("secret-key", "gemini-3.5-flash", client=client)
+
+    result = await provider.check_connection()
+
+    assert result.ok is False
+    assert expected_message in result.message
+    assert generate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_connection_check_rejects_empty_response() -> None:
+    client, generate = fake_client(SimpleNamespace(text=""))
+    provider = GeminiSummaryProvider("secret-key", "gemini-3.5-flash", client=client)
+
+    result = await provider.check_connection()
+
+    assert result.ok is False
+    assert "텍스트 응답을 받지 못했습니다" in result.message
+    assert generate.await_count == 1
