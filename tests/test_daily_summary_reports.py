@@ -230,7 +230,7 @@ async def test_concurrent_generation_runs_ai_only_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_today_preview_does_not_block_the_next_scheduled_final_report() -> None:
+async def test_scheduled_final_posts_fresh_messages_after_a_today_preview() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     provider = FakeProvider()
@@ -253,6 +253,8 @@ async def test_today_preview_does_not_block_the_next_scheduled_final_report() ->
         assert duplicate_preview.status == "duplicate"
         assert final.status == "completed"
         assert provider.calls == 2
+        assert publisher.calls[0][1] == []
+        assert publisher.calls[1][1] == []
         async with database.session_factory() as session:
             stored = await DailyReportRepository(session).get(100, report_date)
         assert stored is not None

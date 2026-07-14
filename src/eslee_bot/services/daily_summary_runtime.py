@@ -445,6 +445,9 @@ class DailyReportService:
             except DuplicateReportError as error:
                 return ReportRunResult("duplicate", str(error))
             existing_ids = parse_message_ids(report.discord_message_ids_json)
+            # A final report must appear at its actual run time instead of silently
+            # editing an older preview message in place.
+            publish_existing_ids = [] if replace_preview else existing_ids
 
         start, end = day_bounds_utc(report_date, timezone)
         async with self.bot.database.session_factory() as session:
@@ -489,7 +492,7 @@ class DailyReportService:
             generated = await self.provider.summarize(messages, targets, timezone=timezone)
             display_names = {target.user_id: target.display_name for target in targets}
             embeds = build_report_embeds(report_date, stats, generated, display_names)
-            published_ids = await self.publisher.publish(embeds, existing_ids)
+            published_ids = await self.publisher.publish(embeds, publish_existing_ids)
             async with self.bot.database.session_factory() as session:
                 stored = await DailyReportRepository(session).get(guild_id, report_date)
                 if stored is None:

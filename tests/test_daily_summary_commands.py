@@ -101,6 +101,10 @@ async def test_today_progress_and_every_result_are_ephemeral(status: str) -> Non
         request.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         request.followup.send.assert_awaited_once()
         assert request.followup.send.await_args.kwargs["ephemeral"] is True
+        assert bot.daily_summary.report_service.generate.await_args.kwargs == {
+            "regenerate": False,
+            "preview": True,
+        }
     finally:
         await database.close()
 
@@ -121,6 +125,10 @@ async def test_yesterday_progress_and_result_are_ephemeral() -> None:
         request.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         request.followup.send.assert_awaited_once()
         assert request.followup.send.await_args.kwargs["ephemeral"] is True
+        assert bot.daily_summary.report_service.generate.await_args.kwargs == {
+            "regenerate": False,
+            "replace_preview": True,
+        }
     finally:
         await database.close()
 

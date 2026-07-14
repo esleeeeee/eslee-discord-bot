@@ -206,6 +206,7 @@ class DailySummaryCog(commands.Cog):
         result = await cast(Any, self.bot.daily_summary.report_service).generate(
             report_date,
             regenerate=재생성,
+            replace_preview=True,
         )
         await interaction.followup.send(
             _result_message(result.status, result.detail), ephemeral=True
