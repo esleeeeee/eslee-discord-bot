@@ -228,11 +228,6 @@ class ModerationCog(commands.Cog):
     async def _warn_user(self, message: discord.Message, matches: list[str]) -> None:
         warning = build_user_warning(matches)
         try:
-            await message.author.send(warning)
-            return
-        except (discord.Forbidden, discord.HTTPException, AttributeError):
-            pass
-        try:
             await message.channel.send(
                 f"{message.author.mention}\n{warning}",
                 delete_after=5,

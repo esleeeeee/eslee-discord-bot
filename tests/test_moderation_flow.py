@@ -21,7 +21,6 @@ class FakeBot:
 
 def make_message(
     *,
-    dm_fails: bool = False,
     bot_author: bool = False,
     content: str = "청사과와 바나나",
     guild_id: int = 1,
@@ -32,7 +31,7 @@ def make_message(
         mention="<@2>",
         name="tester",
         display_name="테스터",
-        send=AsyncMock(side_effect=AttributeError if dm_fails else None),
+        send=AsyncMock(),
     )
     channel = SimpleNamespace(id=3, send=AsyncMock())
     return SimpleNamespace(
@@ -60,8 +59,9 @@ async def test_moderation_deletes_warns_and_persists_one_violation() -> None:
         await cog._moderate_message(message)
 
         message.delete.assert_awaited_once()
-        message.author.send.assert_awaited_once()
-        message.channel.send.assert_not_awaited()
+        message.author.send.assert_not_awaited()
+        message.channel.send.assert_awaited_once()
+        assert message.channel.send.await_args.kwargs["delete_after"] == 5
         async with database.session_factory() as session:
             records = list(await session.scalars(select(ModerationViolation)))
             assert len(records) == 1
@@ -139,17 +139,19 @@ async def test_forbidden_word_changes_apply_immediately_without_cross_guild_leak
 
 
 @pytest.mark.asyncio
-async def test_failed_dm_uses_five_second_channel_fallback() -> None:
+async def test_every_warning_uses_the_five_second_channel_message() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     try:
-        message = make_message(dm_fails=True)
+        message = make_message()
         cog = ModerationCog(FakeBot(database))  # type: ignore[arg-type]
 
         await cog._warn_user(message, ["사과", "바나나"])
 
+        message.author.send.assert_not_awaited()
         message.channel.send.assert_awaited_once()
         assert message.channel.send.await_args.kwargs["delete_after"] == 5
+        assert message.author.mention in message.channel.send.await_args.args[0]
     finally:
         await database.close()
 

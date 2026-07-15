@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
 - Forbidden-word moderation for new and edited messages.
 - Batch registration of up to 500 comma/newline-separated forbidden words.
 - Read-only forbidden-word listing available to every server member.
-- DM-first user warnings with a temporary channel fallback.
+- Temporary channel warnings that mention the user and auto-delete after about five seconds.
 - Per-server moderation audit-log channel settings.
 - Privacy-minimized moderation violation records.
 - PostgreSQL support through SQLAlchemy's asyncpg dialect while retaining SQLite locally.

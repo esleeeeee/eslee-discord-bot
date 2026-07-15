@@ -8,7 +8,7 @@ This permanent invite URL points to the official bot application. Servers that i
 
 `eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible, removes forbidden words in real time, and can publish a Gemini-powered daily conversation report for one configured channel. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
 
-The bot also provides persistent, server-specific moderation with DM-first warnings, a short-lived channel fallback, and optional administrator audit logs.
+The bot also provides persistent, server-specific moderation with short-lived channel warnings and optional administrator audit logs.
 
 ## Overview
 
@@ -22,7 +22,7 @@ The bot also provides persistent, server-specific moderation with DM-first warni
 
 Discord's pin list requires members to look for it manually. This bot periodically exposes important messages in the channel while keeping one canonical source. A Poll reminder links back to the original Poll, preserving every vote. Attachment reminders reference existing Discord-hosted files instead of re-uploading them.
 
-Moderation follows the same practical approach: matching is predictable, warnings are private when possible, and stored violation records exclude the original message body.
+Moderation follows the same practical approach: matching is predictable, warnings disappear from the channel after about five seconds, and stored violation records exclude the original message body.
 
 ## Features
 
@@ -58,7 +58,7 @@ Images and files are referenced, never re-uploaded. Polls are never copied or de
 
 Matching keeps the existing Unicode NFKC plus `casefold()` substring rule, then performs a bounded evasion check. For a registered word such as `주식`, forms like `주.식`, `주123식`, `주 식`, `주ㅋㅋ식`, zero-width insertion, and separated Jamo are detected without globally deleting separators or using an unrestricted wildcard. Only approved filler categories are allowed, with at most eight characters between meaningful characters, so ordinary Korean text with unrelated words in between is not joined into a match.
 
-When one or more words match, the bot attempts message deletion, warns the user by DM, falls back to a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus the originally registered matched words in the database.
+When one or more words match, the bot attempts message deletion, mentions the user in a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus the originally registered matched words in the database. It does not send moderation DMs.
 
 Messages from bots, the bot itself, and webhooks are ignored. Both newly created messages and message edits are inspected. Attachment-only messages have no text and are ignored.
 
@@ -108,7 +108,7 @@ Discord-specific network work stays in Cogs and the scheduler. Text normalizatio
 | `/하루요약 어제` | Configured guild Owner/Admin | Repost the completed report without another AI request |
 | `/하루요약 연결확인` | Configured guild Owner/Admin | Privately verify Gemini model access |
 
-Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses DM then a temporary channel fallback.
+Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses a temporary channel warning for every user.
 
 ## Project Structure
 
