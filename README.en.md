@@ -66,7 +66,7 @@ Messages from bots, the bot itself, and webhooks are ignored. Both newly created
 
 Daily summaries are opt-in and scoped to one configured guild and text channel; announcements, moderation, and server settings remain public multi-server features isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
 
-After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 06:01, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. Raw text is retained for three days by default.
+After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 06:01, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. `/하루요약 어제` copies an existing completed Discord report into new messages without another Gemini request and only generates it when the original is unavailable. Raw text is retained for three days by default.
 
 The `/하루요약 상태`, `오늘`, `어제`, and `연결확인` command responses are private to the administrator who invoked them. The connection check sends one minimal Gemini request without revealing the API key or changing report state. Only the completed report body is posted publicly. See [the daily-summary operations guide](docs/daily-summary.md) for configuration, privacy, and failure handling.
 
@@ -210,6 +210,20 @@ The first run creates `data/eslee_bot.db`. Missing or invalid required environme
 
 PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. Northflank's `sslmode=require` query option is translated to asyncpg's supported `ssl=require` option while preserving the TLS requirement.
 
+For an optional Windows login task, run `scripts/install_scheduled_task.ps1`. Do not run the same Discord token locally while a Northflank instance is active.
+
+## Migrating SQLite Data to PostgreSQL
+
+The read-only migration tool merges guild settings, forbidden words, announcements, and moderation violations into PostgreSQL inside one transaction. It preserves announcement IDs, skips natural-key duplicates, rolls back on conflicts, and can be safely checked first with a dry run.
+
+```powershell
+$env:DATABASE_URL = "<PostgreSQL URI>"
+python scripts/migrate_sqlite_to_postgres.py --dry-run
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+See the [SQLite → PostgreSQL migration guide](docs/sqlite-to-postgres-migration.md) before running it. Never place the PostgreSQL password in code or Git.
+
 ## Docker
 
 ```bash
@@ -254,7 +268,7 @@ The moderation audit channel may display the original violating message to serve
 
 These are deliberately outside v1.
 
-The v1 deployment assumes one running bot process. Running multiple replicas against the same SQLite file can duplicate external Discord actions. Schema migrations are also not included yet; back up the database before changing models.
+The v1 deployment assumes one running bot process. Running multiple replicas can duplicate external Discord actions. Back up both databases before migration or model changes.
 
 ## License
 
