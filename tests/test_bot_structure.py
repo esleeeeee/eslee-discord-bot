@@ -50,6 +50,7 @@ async def test_extensions_commands_and_intents_load_without_discord_connection()
         assert bot.intents.guilds
         assert bot.intents.messages
         assert bot.intents.message_content
+        assert bot.intents.voice_states
         assert not bot.intents.members
         forbidden_group = next(
             command for command in bot.tree.get_commands() if command.name == "금지어"

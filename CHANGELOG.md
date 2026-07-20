@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add an authenticated OneKey HTTP API with `/health` and `/api/voice-status`.
+- Enable the non-privileged Discord Voice States intent and query cached guild voice states.
+- Add Windows `tzdata` and direct `aiohttp` runtime dependencies plus API regression tests.
+
 All notable changes to this project will be documented in this file.
 
 ## [0.1.0] - Unreleased

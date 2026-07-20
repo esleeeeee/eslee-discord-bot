@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 POSTGRESQL_ASYNCPG_SCHEME = "postgresql+asyncpg://"
@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     daily_summary_min_participants: int = Field(default=2, ge=1)
     daily_summary_min_user_messages: int = Field(default=3, ge=1)
     daily_summary_max_users: int = Field(default=20, ge=1, le=100)
+    onekey_discord_user_id: int | None = Field(default=None, gt=0)
+    onekey_api_token: SecretStr | None = None
+    port: int = Field(default=8080, ge=1, le=65535)
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -127,6 +130,32 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("onekey_discord_user_id", mode="before")
+    @classmethod
+    def empty_onekey_user_id_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def require_complete_onekey_api_settings(self) -> Settings:
+        token = (
+            self.onekey_api_token.get_secret_value().strip()
+            if self.onekey_api_token is not None
+            else ""
+        )
+        user_configured = self.onekey_discord_user_id is not None
+        token_configured = bool(token)
+        if user_configured != token_configured:
+            raise ValueError(
+                "ONEKEY_DISCORD_USER_ID and ONEKEY_API_TOKEN must be configured together"
+            )
+        return self
+
+    @property
+    def onekey_api_enabled(self) -> bool:
+        return self.onekey_discord_user_id is not None and self.onekey_api_token is not None
 
     def get_daily_summary_config(self) -> DailySummaryConfig:
         errors: list[str] = []
