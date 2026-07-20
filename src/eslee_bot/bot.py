@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from eslee_bot.config import Settings
 from eslee_bot.database import Database
+from eslee_bot.onekey_api import OneKeyApiServer
 from eslee_bot.services.daily_summary_runtime import DailySummaryRuntime
 from eslee_bot.tasks.announcement_scheduler import AnnouncementScheduler
 
@@ -27,17 +28,31 @@ class EsleeBot(commands.Bot):
         intents.guilds = True
         intents.messages = True
         intents.message_content = True
+        intents.voice_states = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.settings = settings
         self.database = Database(settings.database_url)
         self.announcement_scheduler = AnnouncementScheduler(self, settings.scheduler_poll_seconds)
         self.daily_summary = DailySummaryRuntime(self, settings.get_daily_summary_config())
+        self.onekey_api: OneKeyApiServer | None = None
+        if settings.onekey_api_enabled:
+            assert settings.onekey_discord_user_id is not None
+            assert settings.onekey_api_token is not None
+            self.onekey_api = OneKeyApiServer(
+                bot=self,
+                target_user_id=settings.onekey_discord_user_id,
+                api_token=settings.onekey_api_token.get_secret_value(),
+                port=settings.port,
+            )
         self.tree.on_error = self._on_app_command_error
 
     async def setup_hook(self) -> None:
         await self.database.initialize()
         for extension in EXTENSIONS:
             await self.load_extension(extension)
+
+        if self.onekey_api is not None:
+            await self.onekey_api.start()
 
         await self._sync_application_commands()
 
@@ -80,6 +95,8 @@ class EsleeBot(commands.Bot):
             logger.warning("Could not send application command error response")
 
     async def close(self) -> None:
+        if self.onekey_api is not None:
+            await self.onekey_api.close()
         await self.daily_summary.stop()
         await self.announcement_scheduler.stop()
         await self.database.close()
