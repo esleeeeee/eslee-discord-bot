@@ -130,7 +130,7 @@ python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-Discord Developer Portal에서 Bot을 생성하고 **Message Content Intent**를 활성화한 뒤, `.env`의 `DISCORD_TOKEN`을 실제 토큰으로 변경합니다. Presence Intent와 Server Members Intent는 필요하지 않습니다.
+Discord Developer Portal에서 Bot을 생성하고 **Message Content Intent**를 활성화한 뒤, `.env`의 `DISCORD_TOKEN`을 실제 토큰으로 변경합니다. OneKey API가 사용하는 Voice States intent는 privileged intent가 아니므로 Portal에서 별도 토글이나 승인이 필요하지 않습니다. Presence Intent와 Server Members Intent도 필요하지 않습니다.
 
 ```env
 DISCORD_TOKEN=replace-with-your-bot-token
@@ -139,6 +139,11 @@ DISCORD_DEV_GUILD_ID=
 DATABASE_URL=sqlite+aiosqlite:///./data/eslee_bot.db
 LOG_LEVEL=INFO
 SCHEDULER_POLL_SECONDS=60
+
+# 선택: 두 값을 함께 설정하면 OneKey 음성 상태 API 활성화
+ONEKEY_DISCORD_USER_ID=your_discord_user_id
+ONEKEY_API_TOKEN=replace_with_secure_random_token
+PORT=8080
 
 # 선택: 특정 서버/채널의 일일 대화 요약
 DAILY_SUMMARY_ENABLED=false
@@ -174,17 +179,17 @@ docker compose logs -f bot
 
 Northflank의 Developer Sandbox는 현재 항상 켜지는 무료 서비스 2개와 무료 데이터베이스 Addon 1개를 제공합니다. 이 플랜은 취미·시험용이며 Northflank는 실제 프로덕션 용도로는 권장하지 않습니다. 무료 정책과 한도는 바뀔 수 있으므로 배포 전에 [공식 요금 안내](https://northflank.com/docs/v1/application/billing/pricing-on-northflank)를 확인하세요.
 
-이 봇은 HTTP 서버가 아니라 Discord Gateway에 외부 연결을 여는 프로세스입니다. Dockerfile에는 `EXPOSE`가 없으며, Northflank 서비스에도 public/private port나 HTTP health check를 추가하지 않습니다.
+OneKey 설정을 추가하면 Discord Gateway 봇과 같은 프로세스에서 경량 HTTP 서버가 실행됩니다. `GET /health`는 인증 없이 프로세스와 Discord 준비 상태를 반환하고, `GET /api/voice-status`는 `Authorization: Bearer <ONEKEY_API_TOKEN>`이 있어야 대상 사용자의 음성채널 참여 여부를 반환합니다. 봇이 참여하지 않은 서버와 DM·그룹 DM 통화는 감지 범위 밖입니다.
 
 1. Northflank에서 Developer Sandbox 프로젝트를 만들고, 같은 프로젝트에 무료 PostgreSQL Addon을 하나 생성합니다.
 2. **Secrets → Create secret group**에서 runtime 변수 그룹을 만들고 **Show addons**로 PostgreSQL Addon을 연결합니다. Addon이 제공하는 `POSTGRES_URI`의 alias를 정확히 `DATABASE_URL`로 지정한 뒤 이 그룹을 봇 서비스에 적용합니다. 원본 URI에는 사용자명과 비밀번호가 포함되므로 직접 복사해 GitHub에 올리지 않습니다.
-3. 같은 secret group 또는 서비스의 runtime variables에 `DISCORD_TOKEN`을 secret 값으로 추가합니다. 필요하다면 `LOG_LEVEL`, `SCHEDULER_POLL_SECONDS`도 추가합니다. 프로덕션에서는 `DISCORD_DEV_GUILD_ID`를 만들지 않습니다. 이 값들은 build argument가 아니라 실행 컨테이너에만 전달되는 runtime 변수여야 합니다.
+3. 같은 secret group 또는 서비스의 runtime variables에 `DISCORD_TOKEN`, `ONEKEY_DISCORD_USER_ID`, `ONEKEY_API_TOKEN`을 추가합니다. OneKey 두 값은 반드시 함께 설정하고 API token은 새로 생성한 충분히 긴 무작위 secret으로 보관합니다. 필요하다면 `LOG_LEVEL`, `SCHEDULER_POLL_SECONDS`도 추가합니다. 프로덕션에서는 `DISCORD_DEV_GUILD_ID`를 만들지 않습니다. 이 값들은 build argument가 아니라 실행 컨테이너에만 전달되는 runtime 변수여야 합니다.
 4. GitHub의 이 저장소와 `main` 브랜치를 선택해 **Combined Service**를 만들고 build type을 **Dockerfile**로 설정합니다. Dockerfile 경로는 저장소 루트의 `/Dockerfile`, 인스턴스 수는 `1`로 둡니다.
-5. Networking/Ports 단계는 비워 두고 서비스를 생성합니다. 첫 실행 시 `Base.metadata.create_all()`이 빈 PostgreSQL DB에 테이블과 인덱스를 생성합니다. 배포 로그에서 `Database initialized`, Discord 로그인, scheduler 시작 메시지를 확인합니다.
+5. Networking/Ports에서 컨테이너의 `PORT`(기본 `8080`)를 HTTP public port로 노출하고 public URL을 생성합니다. HTTP health check는 `/health`로 설정합니다. 첫 실행 시 `Base.metadata.create_all()`이 빈 PostgreSQL DB에 테이블과 인덱스를 생성합니다. 배포 로그에서 `Database initialized`, `OneKey API listening`, Discord 로그인 메시지를 확인합니다.
 
 Northflank가 제공하는 `postgresql://...` 형식은 실행 시 자동으로 `postgresql+asyncpg://...`로 정규화됩니다. `postgres://...`도 지원하며, 이미 `postgresql+asyncpg://...`인 scheme은 중복 변경하지 않습니다. TLS Addon URI의 `sslmode=require`는 asyncpg가 지원하는 `ssl=require` 연결 옵션으로 변환되어 TLS 요구사항을 유지합니다. 자세한 Addon 연결 과정은 [Northflank PostgreSQL 문서](https://northflank.com/docs/v1/application/databases-and-persistence/deploy-databases-on-northflank/deploy-postgresql-on-northflank)를 참고하세요.
 
-Northflank 기본 운영에 필요한 환경변수는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL` 두 개입니다. 일일 요약을 사용할 때만 `DAILY_SUMMARY_*` 채널 설정과 `GEMINI_API_KEY`를 추가합니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 봇 전체를 특정 서버에 묶는 Guild ID 환경변수는 필요하지 않습니다.
+Northflank 기본 봇 운영에는 `DISCORD_TOKEN`과 PostgreSQL `POSTGRES_URI`를 alias한 `DATABASE_URL`이 필요합니다. OneKey API를 사용할 때 `ONEKEY_DISCORD_USER_ID`, `ONEKEY_API_TOKEN`, `PORT`를 추가합니다. 일일 요약을 사용할 때만 `DAILY_SUMMARY_*` 채널 설정과 `GEMINI_API_KEY`를 추가합니다. `LOG_LEVEL`과 `SCHEDULER_POLL_SECONDS`는 선택사항이며, 봇 전체를 특정 서버에 묶는 Guild ID 환경변수는 필요하지 않습니다.
 
 로컬 SQLite 데이터는 PostgreSQL로 자동 이전되지 않습니다. 기존 데이터를 옮길 때는 [SQLite → PostgreSQL 데이터 이전 가이드](docs/sqlite-to-postgres-migration.md)를 따르세요. 이전 중에는 로컬 봇과 Northflank 봇을 모두 중지하고, 같은 토큰으로 두 환경을 동시에 실행하지 마세요. 중복 리마인드를 피하기 위해 Northflank 인스턴스 수도 반드시 하나로 유지합니다.
 

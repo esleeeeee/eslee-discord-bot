@@ -165,11 +165,14 @@ On PowerShell, copy the file with `Copy-Item .env.example .env`.
 
 Never commit the token. If a token is exposed, reset it immediately in the portal.
 
+The Voice States intent used by the OneKey API is not privileged and needs no separate Portal toggle or approval.
+
 ## Required Intents
 
 - Guilds
 - Guild Messages
 - Message Content (privileged; must be enabled in the Developer Portal)
+- Voice States (non-privileged; enabled in code)
 
 The Members intent is not required.
 
@@ -195,6 +198,9 @@ Required:
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | SQLite or PostgreSQL connection URL |
 | `LOG_LEVEL` | No | `INFO` | Standard Python log level |
 | `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
+| `ONEKEY_DISCORD_USER_ID` | As a pair | empty | Discord user whose cached guild voice state is queried |
+| `ONEKEY_API_TOKEN` | As a pair | empty | Secret Bearer token; never place it in a URL or logs |
+| `PORT` | No | `8080` | HTTP listen port used when the OneKey API pair is configured |
 
 Daily summaries additionally use `DAILY_SUMMARY_ENABLED`, the configured guild/source/report channel IDs, `GEMINI_API_KEY`, and optional model, timezone, threshold, and retention settings. These settings enable only the summary feature; the bot itself does not require a production guild ID. Copy the exact keys from [.env.example](.env.example).
 
@@ -207,6 +213,8 @@ python -m eslee_bot
 ```
 
 The first run creates `data/eslee_bot.db`. Missing or invalid required environment values produce a readable startup error without exposing secrets.
+
+When both OneKey settings are present, `GET /health` reports process and Discord readiness and authenticated `GET /api/voice-status` returns at least `{ "in_voice": true|false }`. Detection is limited to guilds visible to the bot; DM and group-DM calls are outside the contract.
 
 PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. Northflank's `sslmode=require` query option is translated to asyncpg's supported `ssl=require` option while preserving the TLS requirement.
 
