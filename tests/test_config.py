@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from eslee_bot.config import Settings, normalize_database_url
 
@@ -59,6 +60,46 @@ def test_settings_do_not_require_a_guild_id(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("DISCORD_DEV_GUILD_ID", raising=False)
     settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
     assert settings.discord_dev_guild_id is None
+
+
+def test_onekey_api_is_disabled_when_both_settings_are_absent() -> None:
+    settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
+
+    assert settings.onekey_api_enabled is False
+
+
+def test_onekey_api_settings_are_parsed_without_exposing_token() -> None:
+    token = "secure-test-token-value"
+    settings = Settings(
+        discord_token="test-token",
+        onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+        onekey_api_token=token,
+        _env_file=None,  # type: ignore[call-arg]
+    )
+
+    assert settings.onekey_api_enabled is True
+    assert settings.onekey_discord_user_id == 123456789012345678
+    assert settings.onekey_api_token is not None
+    assert settings.onekey_api_token.get_secret_value() == token
+    assert token not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"onekey_discord_user_id": "123456789012345678"},
+        {"onekey_api_token": "secure-test-token-value"},
+        {
+            "onekey_discord_user_id": "not-a-discord-id",
+            "onekey_api_token": "secure-test-token-value",
+        },
+    ],
+)
+def test_incomplete_or_invalid_onekey_api_settings_fail_validation(
+    values: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(discord_token="test-token", _env_file=None, **values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("variable", ["DISCORD_GUILD_ID", "GUILD_ID", "TEST_GUILD_ID"])
