@@ -12,7 +12,8 @@
   제거한다.
 - Discord 답장의 `reply_to_message_id`를 저장하고, 같은 날 원문이 있으면 요약 입력에 원 작성자도
   함께 표시한다.
-- `Asia/Seoul` 기준 06:01에 전날 06:00 이상, 당일 06:00 미만 대화를 집계한다.
+- `Asia/Seoul` 기준 06:02 이후 전날 06:00 이상, 당일 06:00 미만 대화를 집계한다.
+  정각 tick을 놓치거나 봇이 늦게 시작해도 완료된 리포트가 없으면 보충 실행한다.
 - 전체 10개 이상이고 참여자가 2명 이상일 때만 Gemini를 호출한다. 조건 미달은 정상
   `skipped`이며 Discord에는 게시하지 않는다.
 - 총 메시지, 참여자, 최다 시간대, 최다 작성자는 코드가 계산한다. Gemini는 전체 요약과
@@ -50,7 +51,7 @@ Discord API 문제로 백필이 실패해도 오류 요약과 개수만 로그�
 | --- | --- | --- |
 | `DAILY_SUMMARY_AI_MODEL` | `gemini-3.5-flash` | Gemini 모델명 |
 | `DAILY_SUMMARY_TIMEZONE` | `Asia/Seoul` | 날짜 경계 시간대 |
-| `DAILY_SUMMARY_RUN_TIME` | `06:01` | 전날 06:00~당일 06:00 리포트 시작 시간 |
+| `DAILY_SUMMARY_RUN_TIME` | `06:02` | 전날 06:00~당일 06:00 리포트 시작 시간 |
 | `DAILY_SUMMARY_RAW_RETENTION_DAYS` | `3` | 요약 원문 보관 일수 |
 | `DAILY_SUMMARY_MIN_TOTAL_MESSAGES` | `10` | 리포트 최소 메시지 수 |
 | `DAILY_SUMMARY_MIN_PARTICIPANTS` | `2` | 리포트 최소 참여자 수 |
@@ -90,7 +91,7 @@ port는 만들지 않는다. main 배포 후 다음을 확인한다.
 - `/하루요약 오늘`로 현재까지의 미리보기 리포트 확인
 
 `오늘` 미리보기는 `preview_*` 상태로 구분된다. 같은 날짜의 중복 수동 호출은 막지만, 다음 날
-06:01 자동 실행은 기존 미리보기 메시지를 수정하지 않고 최종 리포트를 새 메시지로 게시한다.
+06:02 이후 자동 실행은 기존 미리보기 메시지를 수정하지 않고 최종 리포트를 새 메시지로 게시한다.
 자동 실행이 누락된 경우 `/하루요약 어제`도 미리보기 기록을 최종 리포트로 전환하면서 새 메시지를
 게시한다.
 
@@ -130,7 +131,8 @@ port는 만들지 않는다. main 배포 후 다음을 확인한다.
 - Gemini는 timeout, 연결, 429, 일부 5xx만 exponential backoff와 jitter로 최대 3회 시도한다. 인증,
   모델명, 요청 형식, schema 오류는 즉시 실패한다.
 - Gemini가 최종 실패하거나 Discord 게시가 완료되지 않으면 `daily_reports.status=failed`로 남기고
-  봇 프로세스는 계속 실행한다.
+  봇 프로세스는 계속 실행한다. 자동 scheduler는 한 tick의 예외나 실패로 종료되지 않으며,
+  완료되지 않은 리포트는 이후 tick에서 다시 회복한다.
 - 같은 `guild_id + report_date`는 asyncio lock과 DB unique constraint로 중복 AI 호출/게시를 방지한다.
 - Discord에 일부 embed만 올라간 상태에서 실패하면 그 ID를 저장하고, `재생성:true`에서 수정 또는
   이어 게시할 수 있게 한다.

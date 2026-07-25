@@ -24,6 +24,7 @@ from eslee_bot.services.daily_summary import (
     select_summary_targets,
 )
 from eslee_bot.services.daily_summary_ai import GeminiSummaryProvider, SummaryProvider
+from eslee_bot.utils.time import ensure_utc
 
 if TYPE_CHECKING:
     from eslee_bot.bot import EsleeBot
@@ -479,6 +480,7 @@ class DailyReportService:
         regenerate: bool = False,
         preview: bool = False,
         replace_preview: bool = False,
+        recover_incomplete: bool = False,
     ) -> ReportRunResult:
         lock = self._locks.setdefault(report_date, asyncio.Lock())
         if lock.locked():
@@ -489,6 +491,7 @@ class DailyReportService:
                 regenerate=regenerate,
                 preview=preview,
                 replace_preview=replace_preview,
+                recover_incomplete=recover_incomplete,
             )
 
     async def _generate_locked(
@@ -498,6 +501,7 @@ class DailyReportService:
         regenerate: bool,
         preview: bool,
         replace_preview: bool,
+        recover_incomplete: bool,
     ) -> ReportRunResult:
         guild_id = cast(int, self.config.guild_id)
         source_channel_id = cast(int, self.config.source_channel_id)
@@ -506,13 +510,25 @@ class DailyReportService:
         start, end = day_bounds_utc(report_date, timezone)
         async with self.bot.database.session_factory() as session:
             reports = DailyReportRepository(session)
+            existing = await reports.get(guild_id, report_date)
+            if (
+                recover_incomplete
+                and existing is not None
+                and existing.status == "completed"
+                and ensure_utc(existing.updated_at) >= end
+            ):
+                return ReportRunResult(
+                    "already_completed",
+                    "완료된 일일 리포트가 이미 있습니다.",
+                )
+            recover_existing = recover_incomplete and existing is not None
             try:
                 report = await reports.claim(
                     guild_id=guild_id,
                     report_date=report_date,
                     source_channel_id=source_channel_id,
                     report_channel_id=report_channel_id,
-                    regenerate=regenerate,
+                    regenerate=regenerate or recover_existing,
                     replace_preview=replace_preview,
                     replace_if_updated_before=end,
                 )

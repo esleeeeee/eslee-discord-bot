@@ -24,7 +24,7 @@ def summary_config() -> DailySummaryConfig:
         report_channel_id=300,
         gemini_api_key="test-key",
         timezone=ZoneInfo("Asia/Seoul"),
-        run_time=datetime.strptime("06:01", "%H:%M").time(),
+        run_time=datetime.strptime("06:02", "%H:%M").time(),
     )
 
 
