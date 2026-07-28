@@ -1,8 +1,6 @@
 # eslee Discord Bot
 
-[➕ **Add eslee-bot to your Discord server**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
-
-This permanent invite URL points to the official bot application. Servers that install it automatically use the currently deployed bot version; no re-invitation is required after updates.
+This is a privately operated management bot for the author's Discord server. No public bot installation or invite link is provided.
 
 **Language:** English · [한국어](README.md)
 
@@ -64,7 +62,7 @@ Messages from bots, the bot itself, and webhooks are ignored. Both newly created
 
 ## Optional Daily Conversation Summary
 
-Daily summaries are opt-in and scoped to one configured guild and text channel; announcements, moderation, and server settings remain public multi-server features isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
+Daily summaries are opt-in and scoped to one configured guild and text channel; announcement, moderation, and server-setting data remain isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
 
 After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At or after 06:02, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. A missed 06:02 tick or a later restart triggers a catch-up when no completed report exists. A transient database, Gemini, or Discord failure does not terminate the scheduler; incomplete reports are retried, while per-date locking and persisted report state prevent duplicate AI requests and duplicate posts when automatic and manual runs overlap. `/하루요약 어제` copies an existing completed Discord report into new messages without another Gemini request and only generates it when the original is unavailable. Raw text is retained for three days by default.
 
@@ -159,9 +157,9 @@ On PowerShell, copy the file with `Copy-Item .env.example .env`.
 1. Create an application at the Discord Developer Portal.
 2. Open **Bot**, create the bot user, and copy its token into `.env`.
 3. Enable **Message Content Intent** under Privileged Gateway Intents.
-4. Enable **Public Bot** when other users should be able to install it in their servers.
-5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes.
-6. Grant only the permissions listed below and invite the bot.
+4. Leave **Public Bot** disabled for a private deployment.
+5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes to install your own application in the target server.
+6. Grant only the permissions listed below.
 
 Never commit the token. If a token is exposed, reset it immediately in the portal.
 
