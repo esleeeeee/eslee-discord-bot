@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from google.genai import errors
 
 from eslee_bot.config import DailySummaryConfig
 from eslee_bot.database import Database
@@ -18,6 +21,14 @@ from eslee_bot.services.daily_summary import (
     SummaryStats,
     UserSummary,
     day_bounds_utc,
+)
+from eslee_bot.services.daily_summary_ai import (
+    AISummaryResponse,
+    AIUserSummary,
+    GeminiSummaryProvider,
+)
+from eslee_bot.services.daily_summary_retry import (
+    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
 )
 from eslee_bot.services.daily_summary_runtime import (
     DailyReportService,
@@ -450,9 +461,13 @@ class FakeReportService:
         *,
         replace_preview: bool = False,
         recover_incomplete: bool = False,
+        automatic: bool = False,
+        now: datetime | None = None,
     ) -> ReportRunResult:
         assert replace_preview is True
         assert recover_incomplete is True
+        assert automatic is True
+        assert now is not None
         self.dates.append(report_date)
         if self.raise_once:
             self.raise_once = False
@@ -566,7 +581,7 @@ async def test_scheduler_first_startup_tick_after_0602_catches_up() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_retries_a_nonterminal_result_on_the_next_tick() -> None:
+async def test_scheduler_cools_down_before_retrying_a_nonterminal_result() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     report_service = FakeReportService(
@@ -586,7 +601,8 @@ async def test_scheduler_retries_a_nonterminal_result_on_the_next_tick() -> None
 
         await scheduler.tick(now=first)
         await scheduler.tick(now=first + timedelta(minutes=1))
-        await scheduler.tick(now=first + timedelta(minutes=2))
+        assert report_service.dates == [date(2026, 7, 13)]
+        await scheduler.tick(now=first + timedelta(minutes=15))
 
         assert report_service.dates == [date(2026, 7, 13), date(2026, 7, 13)]
     finally:
@@ -652,5 +668,152 @@ async def test_scheduler_recovery_does_not_regenerate_a_completed_report() -> No
         assert recovered.status == "already_completed"
         assert provider.calls == 1
         assert len(publisher.calls) == 1
+    finally:
+        await database.close()
+
+
+def gemini_client(generate: AsyncMock) -> SimpleNamespace:
+    return SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate)),
+    )
+
+
+def successful_gemini_response() -> SimpleNamespace:
+    return SimpleNamespace(
+        parsed=AISummaryResponse(
+            daily_summary="자동 요약 성공",
+            user_summaries=[
+                AIUserSummary(user_id="10", summary="사용자 10 요약"),
+                AIUserSummary(user_id="20", summary="사용자 20 요약"),
+            ],
+        ),
+        text=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_cooldown_prevents_tick_flood_and_catches_up_after_reset() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    report_date = date(2026, 7, 29)
+    daily_quota = errors.APIError(
+        429,
+        {
+            "error": {
+                "details": [
+                    {
+                        "violations": [
+                            {
+                                "quotaId": (
+                                    "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+                                )
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+    )
+    generate = AsyncMock(side_effect=[daily_quota, successful_gemini_response()])
+    provider = GeminiSummaryProvider(
+        "test",
+        "gemini-test",
+        client=gemini_client(generate),
+        sleep=AsyncMock(),
+        jitter=lambda: 0,
+    )
+    publisher = FakePublisher()
+    service = DailyReportService(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        provider,
+        publisher,  # type: ignore[arg-type]
+    )
+    first = datetime(2026, 7, 30, 6, 2, tzinfo=KST).astimezone(UTC)
+    scheduler = DailySummaryScheduler(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        service,
+        poll_seconds=60,
+    )
+    try:
+        await insert_messages(database, report_date, {10: 5, 20: 5}, first_message_id=1)
+
+        await scheduler.tick(now=first)
+        assert generate.await_count == 1
+
+        restarted_scheduler = DailySummaryScheduler(
+            FakeBot(database),  # type: ignore[arg-type]
+            summary_config(),
+            service,
+            poll_seconds=60,
+        )
+        for hour in range(7, 16):
+            await restarted_scheduler.tick(
+                now=datetime(2026, 7, 30, hour, 0, tzinfo=KST).astimezone(UTC)
+            )
+        await restarted_scheduler.tick(
+            now=datetime(2026, 7, 30, 16, 4, tzinfo=KST).astimezone(UTC)
+        )
+        assert generate.await_count == 1
+
+        await restarted_scheduler.tick(
+            now=datetime(2026, 7, 30, 16, 5, tzinfo=KST).astimezone(UTC)
+        )
+
+        assert generate.await_count == 2
+        assert len(publisher.calls) == 1
+        async with database.session_factory() as session:
+            stored = await DailyReportRepository(session).get(100, report_date)
+        assert stored is not None
+        assert stored.status == "completed"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_ai_requests_have_a_persisted_per_report_limit() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    report_date = date(2026, 7, 29)
+    generate = AsyncMock(
+        side_effect=errors.APIError(503, {"message": "temporarily unavailable"})
+    )
+    provider = GeminiSummaryProvider(
+        "test",
+        "gemini-test",
+        client=gemini_client(generate),
+        sleep=AsyncMock(),
+        jitter=lambda: 0,
+    )
+    service = DailyReportService(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        provider,
+        FakePublisher(),  # type: ignore[arg-type]
+    )
+    scheduler = DailySummaryScheduler(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        service,
+        poll_seconds=60,
+    )
+    first = datetime(2026, 7, 30, 6, 2, tzinfo=KST).astimezone(UTC)
+    try:
+        await insert_messages(database, report_date, {10: 5, 20: 5}, first_message_id=1)
+
+        for attempt in range(12):
+            await scheduler.tick(now=first + timedelta(minutes=15 * attempt))
+
+        assert generate.await_count == MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT
+
+        restarted_scheduler = DailySummaryScheduler(
+            FakeBot(database),  # type: ignore[arg-type]
+            summary_config(),
+            service,
+            poll_seconds=60,
+        )
+        await restarted_scheduler.tick(now=first + timedelta(hours=5))
+        assert generate.await_count == MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT
     finally:
         await database.close()

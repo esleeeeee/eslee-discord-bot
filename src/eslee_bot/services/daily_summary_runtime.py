@@ -23,7 +23,20 @@ from eslee_bot.services.daily_summary import (
     parse_message_ids,
     select_summary_targets,
 )
-from eslee_bot.services.daily_summary_ai import GeminiSummaryProvider, SummaryProvider
+from eslee_bot.services.daily_summary_ai import (
+    GeminiSummaryProvider,
+    SummaryProvider,
+    is_retryable_ai_error,
+)
+from eslee_bot.services.daily_summary_retry import (
+    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+    AIRequestFailure,
+    AIRetryKind,
+    AutomaticRetryState,
+    decode_retry_state,
+    encode_retry_state,
+    next_retry_at,
+)
 from eslee_bot.utils.time import ensure_utc
 
 if TYPE_CHECKING:
@@ -47,6 +60,9 @@ class BackfillResult:
 class ReportRunResult:
     status: str
     detail: str
+    retry_kind: AIRetryKind | None = None
+    retry_at: datetime | None = None
+    automatic_ai_requests: int = 0
 
 
 class DiscordPublishError(RuntimeError):
@@ -481,6 +497,8 @@ class DailyReportService:
         preview: bool = False,
         replace_preview: bool = False,
         recover_incomplete: bool = False,
+        automatic: bool = False,
+        now: datetime | None = None,
     ) -> ReportRunResult:
         lock = self._locks.setdefault(report_date, asyncio.Lock())
         if lock.locked():
@@ -492,6 +510,8 @@ class DailyReportService:
                 preview=preview,
                 replace_preview=replace_preview,
                 recover_incomplete=recover_incomplete,
+                automatic=automatic,
+                now=now,
             )
 
     async def _generate_locked(
@@ -502,7 +522,10 @@ class DailyReportService:
         preview: bool,
         replace_preview: bool,
         recover_incomplete: bool,
+        automatic: bool,
+        now: datetime | None,
     ) -> ReportRunResult:
+        current = ensure_utc(now or datetime.now(UTC))
         guild_id = cast(int, self.config.guild_id)
         source_channel_id = cast(int, self.config.source_channel_id)
         report_channel_id = cast(int, self.config.report_channel_id)
@@ -511,6 +534,9 @@ class DailyReportService:
         async with self.bot.database.session_factory() as session:
             reports = DailyReportRepository(session)
             existing = await reports.get(guild_id, report_date)
+            retry_state = decode_retry_state(
+                existing.error_message if existing is not None else None
+            )
             if (
                 recover_incomplete
                 and existing is not None
@@ -520,6 +546,26 @@ class DailyReportService:
                 return ReportRunResult(
                     "already_completed",
                     "완료된 일일 리포트가 이미 있습니다.",
+                )
+            if automatic and retry_state.request_count >= MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT:
+                return ReportRunResult(
+                    "limit_reached",
+                    "이 날짜의 자동 AI 호출 상한에 도달했습니다.",
+                    retry_kind=retry_state.kind,
+                    retry_at=retry_state.retry_at,
+                    automatic_ai_requests=retry_state.request_count,
+                )
+            if (
+                automatic
+                and retry_state.retry_at is not None
+                and current < retry_state.retry_at
+            ):
+                return ReportRunResult(
+                    "cooldown",
+                    "Gemini 재시도 대기 중입니다.",
+                    retry_kind=retry_state.kind,
+                    retry_at=retry_state.retry_at,
+                    automatic_ai_requests=retry_state.request_count,
                 )
             recover_existing = recover_incomplete and existing is not None
             try:
@@ -623,17 +669,49 @@ class DailyReportService:
         except Exception as error:
             partial_ids = error.message_ids if isinstance(error, DiscordPublishError) else None
             safe_error = _safe_error_summary(error)
+            retry_kind, retry_after_seconds = _retry_policy_for_error(error)
+            retry_at = next_retry_at(current, retry_kind, retry_after_seconds)
+            provider_request_count = max(
+                0,
+                int(getattr(self.provider, "api_request_count", 0)),
+            )
+            automatic_ai_requests = retry_state.request_count
+            if automatic:
+                automatic_ai_requests += provider_request_count
+            persisted_error = safe_error
+            if automatic or retry_state.request_count:
+                persisted_error = encode_retry_state(
+                    AutomaticRetryState(
+                        request_count=automatic_ai_requests,
+                        kind=retry_kind,
+                        retry_at=retry_at,
+                        error_summary=safe_error,
+                    )
+                )
             async with self.bot.database.session_factory() as session:
                 stored = await DailyReportRepository(session).get(guild_id, report_date)
                 if stored is not None:
                     await DailyReportRepository(session).mark_failed(
                         stored,
-                        safe_error,
+                        persisted_error,
                         discord_message_ids=partial_ids or published_ids,
                         preview=preview,
                     )
-            logger.exception("Daily report generation failed safely (date=%s)", report_date)
-            return ReportRunResult("failed", "리포트 생성에 실패했습니다. 로그를 확인하세요.")
+            logger.exception(
+                "Daily report generation failed safely "
+                "(date=%s retry_kind=%s retry_at=%s automatic_ai_requests=%s)",
+                report_date,
+                retry_kind.value,
+                retry_at.isoformat(),
+                automatic_ai_requests,
+            )
+            return ReportRunResult(
+                "failed",
+                "리포트 생성에 실패했습니다. 로그를 확인하세요.",
+                retry_kind=retry_kind,
+                retry_at=retry_at,
+                automatic_ai_requests=automatic_ai_requests,
+            )
 
 
 def _safe_error_summary(error: BaseException) -> str:
@@ -641,6 +719,16 @@ def _safe_error_summary(error: BaseException) -> str:
     if isinstance(code, int):
         return f"{type(error).__name__} (code={code})"
     return type(error).__name__
+
+
+def _retry_policy_for_error(
+    error: BaseException,
+) -> tuple[AIRetryKind, float | None]:
+    if isinstance(error, AIRequestFailure):
+        return error.kind, error.retry_after_seconds
+    if is_retryable_ai_error(error):
+        return AIRetryKind.TRANSIENT, None
+    return AIRetryKind.NON_RETRYABLE, None
 
 
 class DailySummaryRuntime:

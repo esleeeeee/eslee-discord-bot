@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,6 +17,11 @@ from eslee_bot.services.daily_summary_ai import (
     AIUserSummary,
     ChunkSummaryResponse,
     GeminiSummaryProvider,
+)
+from eslee_bot.services.daily_summary_retry import (
+    MAX_AI_REQUESTS_PER_SUMMARY_RUN,
+    AIRequestFailure,
+    AIRetryKind,
 )
 
 
@@ -132,7 +137,7 @@ async def test_non_retryable_api_status_fails_immediately() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [429, 500, 503])
+@pytest.mark.parametrize("status_code", [500, 503])
 async def test_retryable_api_status_retries_at_most_three_times(
     status_code: int,
 ) -> None:
@@ -155,6 +160,103 @@ async def test_retryable_api_status_retries_at_most_three_times(
 
     assert generate.await_count == 3
     assert sleep.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("details", "expected_kind"),
+    [
+        (
+            {
+                "error": {
+                    "details": [
+                        {
+                            "violations": [
+                                {
+                                    "quotaId": (
+                                        "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+                                    )
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            AIRetryKind.DAILY_QUOTA,
+        ),
+        (
+            {
+                "error": {
+                    "details": [
+                        {
+                            "violations": [
+                                {
+                                    "quotaId": (
+                                        "GenerateRequestsPerMinutePerProjectPerModel"
+                                    )
+                                }
+                            ]
+                        },
+                        {"retryDelay": "35s"},
+                    ]
+                }
+            },
+            AIRetryKind.RATE_LIMIT,
+        ),
+        (
+            {"error": {"message": "Resource exhausted"}},
+            AIRetryKind.UNKNOWN_QUOTA,
+        ),
+    ],
+)
+async def test_429_is_classified_without_same_tick_retries(
+    details: dict[str, object],
+    expected_kind: AIRetryKind,
+) -> None:
+    sleep = AsyncMock()
+    client, generate = fake_client(errors.APIError(429, details))
+    provider = GeminiSummaryProvider(
+        "test",
+        "gemini-test",
+        client=client,
+        sleep=sleep,
+        jitter=lambda: 0,
+    )
+
+    with pytest.raises(AIRequestFailure) as caught:
+        await provider.summarize(messages(), targets(), timezone=ZoneInfo("UTC"))
+
+    assert caught.value.kind is expected_kind
+    assert generate.await_count == 1
+    assert provider.api_request_count == 1
+    sleep.assert_not_awaited()
+
+
+def test_owned_sdk_retries_are_disabled_to_avoid_nested_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SimpleNamespace()
+    client_factory = Mock(return_value=client)
+    monkeypatch.setattr("eslee_bot.services.daily_summary_ai.genai.Client", client_factory)
+
+    provider = GeminiSummaryProvider("test", "gemini-test")
+
+    assert provider._client is client
+    http_options = client_factory.call_args.kwargs["http_options"]
+    assert http_options.retry_options.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_one_summary_run_has_a_hard_request_limit() -> None:
+    client, generate = fake_client(SimpleNamespace(parsed=valid_response(), text=None))
+    provider = GeminiSummaryProvider("test", "gemini-test", client=client)
+    provider.api_request_count = MAX_AI_REQUESTS_PER_SUMMARY_RUN
+
+    with pytest.raises(AIRequestFailure) as caught:
+        await provider._generate("prompt", AISummaryResponse)
+
+    assert caught.value.kind is AIRetryKind.RUN_LIMIT
+    generate.assert_not_awaited()
 
 
 @pytest.mark.asyncio

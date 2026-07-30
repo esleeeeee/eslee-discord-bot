@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any, cast
 from eslee_bot.config import DailySummaryConfig
 from eslee_bot.database.repositories import DailySummaryMessageRepository
 from eslee_bot.services.daily_summary import retention_cutoff_utc, scheduled_report_date
+from eslee_bot.services.daily_summary_retry import (
+    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+    TRANSIENT_FAILURE_COOLDOWN,
+)
 
 if TYPE_CHECKING:
     from eslee_bot.bot import EsleeBot
@@ -33,6 +37,7 @@ class DailySummaryScheduler:
         self._task: asyncio.Task[None] | None = None
         self._last_terminal_report_day: date | None = None
         self._last_cleanup_day: date | None = None
+        self._next_report_attempt_at: dict[date, datetime] = {}
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -87,6 +92,10 @@ class DailySummaryScheduler:
         )
         if report_date is None or self._last_terminal_report_day == local_date:
             return
+        next_attempt = self._next_report_attempt_at.get(report_date)
+        if next_attempt is not None and current < next_attempt:
+            return
+        self._next_report_attempt_at.pop(report_date, None)
         logger.info(
             "Daily summary scheduled run starting (date=%s local_time=%s)",
             report_date,
@@ -96,15 +105,33 @@ class DailySummaryScheduler:
             report_date,
             replace_preview=True,
             recover_incomplete=True,
+            automatic=True,
+            now=current,
         )
-        if result.status in {"completed", "already_completed", "skipped"}:
+        if result.status in {"completed", "already_completed", "skipped", "limit_reached"}:
             self._last_terminal_report_day = local_date
+            self._next_report_attempt_at.pop(report_date, None)
+        elif result.automatic_ai_requests >= MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT:
+            self._last_terminal_report_day = local_date
+            logger.error(
+                "Daily summary automatic AI request limit reached "
+                "(date=%s requests=%s limit=%s)",
+                report_date,
+                result.automatic_ai_requests,
+                MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+            )
         else:
+            retry_at = result.retry_at or current + TRANSIENT_FAILURE_COOLDOWN
+            self._next_report_attempt_at[report_date] = retry_at
             logger.warning(
-                "Daily summary scheduled run remains incomplete and will retry "
-                "(date=%s status=%s)",
+                "Daily summary scheduled run remains incomplete "
+                "(date=%s status=%s retry_kind=%s retry_at=%s "
+                "automatic_ai_requests=%s)",
                 report_date,
                 result.status,
+                result.retry_kind.value if result.retry_kind is not None else "unknown",
+                retry_at.isoformat(),
+                result.automatic_ai_requests,
             )
         logger.info(
             "Daily summary scheduled run finished (date=%s status=%s)",

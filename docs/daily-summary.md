@@ -128,11 +128,20 @@ port는 만들지 않는다. main 배포 후 다음을 확인한다.
 
 ## 장애 처리
 
-- Gemini는 timeout, 연결, 429, 일부 5xx만 exponential backoff와 jitter로 최대 3회 시도한다. 인증,
-  모델명, 요청 형식, schema 오류는 즉시 실패한다.
+- Gemini `503`, timeout, network 오류는 한 생성 작업 안에서 exponential backoff와 jitter로 최대
+  3회 시도한다. 운영 client의 SDK retry는 1회로 고정해 SDK와 애플리케이션 retry가 중첩되지 않는다.
+- `429`는 같은 생성 작업 안에서 재시도하지 않고 quota 상세를 분류한다. RPM/TPM 또는 `RetryInfo`가
+  확인되면 최소 10분, 종류가 불명확하면 1시간 동안 자동 호출을 중단한다.
+- 일일 RPD quota는 Pacific 자정에 초기화되므로 다음 자정에서 5분 지난 시각까지 대기한 뒤,
+  `completed` 리포트가 없을 때 자동 보충한다. 한국의 초기화 시각은 미국 서머타임 적용 여부에 따라
+  달라진다.
+- 날짜별 자동 AI 요청 수는 DB의 실패 상태에 누적하며 최대 24회로 제한한다. 컨테이너가 재시작돼도
+  cooldown과 누적값을 다시 읽으므로 짧은 scheduler tick이 수백 번의 API 요청으로 번지지 않는다.
+- 인증, 모델명, 요청 형식, schema 오류는 한 번 실패한 뒤 하루 동안 자동 cooldown한다. 수동
+  `/하루요약 어제`와 `재생성:true`는 자동 cooldown과 별개로 계속 실행할 수 있다.
 - Gemini가 최종 실패하거나 Discord 게시가 완료되지 않으면 `daily_reports.status=failed`로 남기고
   봇 프로세스는 계속 실행한다. 자동 scheduler는 한 tick의 예외나 실패로 종료되지 않으며,
-  완료되지 않은 리포트는 이후 tick에서 다시 회복한다.
+  cooldown 종료 후 완료되지 않은 리포트를 다시 회복한다.
 - 같은 `guild_id + report_date`는 asyncio lock과 DB unique constraint로 중복 AI 호출/게시를 방지한다.
 - Discord에 일부 embed만 올라간 상태에서 실패하면 그 ID를 저장하고, `재생성:true`에서 수정 또는
   이어 게시할 수 있게 한다.

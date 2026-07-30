@@ -19,12 +19,18 @@ from eslee_bot.services.daily_summary import (
     target_payload,
     transcript_payload,
 )
+from eslee_bot.services.daily_summary_retry import (
+    MAX_AI_REQUESTS_PER_SUMMARY_RUN,
+    AIRequestFailure,
+    AIRetryKind,
+    classify_gemini_429,
+)
 
 logger = logging.getLogger(__name__)
 
 DIRECT_INPUT_CHAR_LIMIT = 600_000
 CHUNK_INPUT_CHAR_LIMIT = 180_000
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {408, 500, 502, 503, 504}
 CONNECTION_CHECK_TIMEOUT_SECONDS = 20
 
 SYSTEM_INSTRUCTION = """당신은 친한 친구들이 사용하는 Discord 서버의 하루 대화를 요약한다.
@@ -77,6 +83,9 @@ class GeminiConnectionResult:
 
 def is_retryable_ai_error(error: BaseException) -> bool:
     if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    error_name = type(error).__name__.casefold()
+    if "timeout" in error_name or error_name in {"connecterror", "networkerror"}:
         return True
     code = getattr(error, "code", None)
     return isinstance(code, int) and code in RETRYABLE_STATUS_CODES
@@ -160,7 +169,12 @@ class GeminiSummaryProvider:
         chunk_input_char_limit: int = CHUNK_INPUT_CHAR_LIMIT,
     ) -> None:
         self.model = model
-        self._client = client or genai.Client(api_key=api_key)
+        self._client = client or genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         self._owns_client = client is None
         self._sleep = sleep
         self._jitter = jitter
@@ -283,6 +297,8 @@ class GeminiSummaryProvider:
     async def _generate(self, prompt: str, response_model: type[ResponseModel]) -> ResponseModel:
         for attempt in range(1, 4):
             try:
+                if self.api_request_count >= MAX_AI_REQUESTS_PER_SUMMARY_RUN:
+                    raise AIRequestFailure(AIRetryKind.RUN_LIMIT)
                 self.api_request_count += 1
                 response = await self._client.aio.models.generate_content(
                     model=self.model,
@@ -305,6 +321,13 @@ class GeminiSummaryProvider:
             except (ValidationError, AIResponseError):
                 raise AIResponseError("Gemini returned an invalid structured response") from None
             except errors.APIError as error:
+                if error.code == 429:
+                    kind, retry_after = classify_gemini_429(error)
+                    raise AIRequestFailure(
+                        kind,
+                        status_code=429,
+                        retry_after_seconds=retry_after,
+                    ) from error
                 if attempt == 3 or not is_retryable_ai_error(error):
                     raise
                 logger.warning(
@@ -322,6 +345,15 @@ class GeminiSummaryProvider:
                     attempt,
                 )
             except Exception as error:
+                if isinstance(error, AIRequestFailure):
+                    raise
+                if getattr(error, "code", None) == 429:
+                    kind, retry_after = classify_gemini_429(error)
+                    raise AIRequestFailure(
+                        kind,
+                        status_code=429,
+                        retry_after_seconds=retry_after,
+                    ) from error
                 if attempt == 3 or not is_retryable_ai_error(error):
                     raise
                 logger.warning(
