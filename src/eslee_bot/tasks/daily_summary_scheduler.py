@@ -108,19 +108,21 @@ class DailySummaryScheduler:
             automatic=True,
             now=current,
         )
-        if result.status in {"completed", "already_completed", "skipped", "limit_reached"}:
+        if result.status in {"completed", "already_completed", "skipped"}:
             self._last_terminal_report_day = local_date
             self._next_report_attempt_at.pop(report_date, None)
-        elif result.automatic_ai_requests >= AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT:
-            self._last_terminal_report_day = local_date
-            logger.error(
-                "Daily summary automatic AI request limit reached "
-                "(date=%s requests=%s limit=%s)",
-                report_date,
-                result.automatic_ai_requests,
-                AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
-            )
         else:
+            # The AI budget is counted per Pacific quota window, which resets in
+            # the Seoul afternoon, so a spent budget waits for that reset rather
+            # than ending the local day.
+            if result.automatic_ai_requests >= AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT:
+                logger.error(
+                    "Daily summary quota-window AI request limit reached "
+                    "(date=%s requests=%s limit=%s)",
+                    report_date,
+                    result.automatic_ai_requests,
+                    AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
+                )
             retry_at = result.retry_at or current + TRANSIENT_FAILURE_COOLDOWN
             self._next_report_attempt_at[report_date] = retry_at
             logger.warning(

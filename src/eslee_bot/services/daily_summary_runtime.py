@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -43,7 +43,9 @@ from eslee_bot.services.daily_summary_retry import (
     AIRequestFailure,
     AIRetryKind,
     decode_retry_state,
+    next_quota_window_start,
     next_retry_at,
+    quota_window,
 )
 from eslee_bot.utils.time import ensure_utc
 
@@ -74,6 +76,18 @@ class ReportRunResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportAIState:
+    """Persisted Gemini budget for one report, resolved to one quota window."""
+
+    window: date
+    window_requests: int = 0
+    total_requests: int = 0
+    retry_kind: str | None = None
+    retry_at: datetime | None = None
+    checkpoint: SummaryCheckpoint = field(default_factory=SummaryCheckpoint)
+
+
+@dataclass(frozen=True, slots=True)
 class ReportDiagnostics:
     report_date: date
     status: str
@@ -83,13 +97,19 @@ class ReportDiagnostics:
     completed_chunks: int
     ai_request_count: int
     ai_request_limit: int
+    ai_request_total: int
+    quota_window: date
     last_stage: str | None
     retry_kind: str | None
     retry_at: datetime | None
 
 
 class ReportAISession:
-    """Per-report Gemini budget and chunk checkpoint, persisted between runs."""
+    """Per-report Gemini budget and chunk checkpoint, persisted between runs.
+
+    The budget is spent against one Pacific quota window; the lifetime total is
+    carried alongside it for auditing and is never reset.
+    """
 
     def __init__(
         self,
@@ -97,17 +117,18 @@ class ReportAISession:
         guild_id: int,
         report_date: date,
         *,
-        request_count: int,
+        state: ReportAIState,
         limit: int,
-        checkpoint: SummaryCheckpoint,
         pacer: RequestPacer | None = None,
     ) -> None:
         self.bot = bot
         self.guild_id = guild_id
         self.report_date = report_date
-        self.request_count = request_count
+        self.window = state.window
+        self.request_count = state.window_requests
+        self.total_requests = state.total_requests
         self.limit = limit
-        self.checkpoint = checkpoint
+        self.checkpoint = state.checkpoint
         self._pacer = pacer or RequestPacer()
 
     @property
@@ -123,6 +144,7 @@ class ReportAISession:
             raise AIRequestFailure(AIRetryKind.BUDGET_EXHAUSTED)
         await self._pacer.acquire(estimated_tokens)
         self.request_count += 1
+        self.total_requests += 1
         await self._persist()
 
     def completed_chunk(self, index: int, fingerprint: str) -> dict[str, Any] | None:
@@ -167,6 +189,8 @@ class ReportAISession:
             await repository.save_ai_progress(
                 stored,
                 request_count=self.request_count,
+                total_requests=self.total_requests,
+                quota_window=self.window,
                 state_json=self.encoded_state(),
             )
 
@@ -564,7 +588,9 @@ class DailyReportService:
         self.pacer_factory = pacer_factory
         self._locks: dict[date, asyncio.Lock] = {}
 
-    async def diagnostics(self, report_date: date) -> ReportDiagnostics:
+    async def diagnostics(
+        self, report_date: date, *, now: datetime | None = None
+    ) -> ReportDiagnostics:
         """Read-only quota and checkpoint view for /하루요약 상태."""
         guild_id = cast(int, self.config.guild_id)
         source_channel_id = cast(int, self.config.source_channel_id)
@@ -578,7 +604,8 @@ class DailyReportService:
                 start,
                 end,
             )
-        spent, retry_kind, retry_at, checkpoint = _load_ai_state(stored)
+        state = _load_ai_state(stored, ensure_utc(now or datetime.now(UTC)))
+        checkpoint = state.checkpoint
         estimated_tokens = 0
         planned_chunks = checkpoint.chunk_total
         if messages:
@@ -597,11 +624,13 @@ class DailyReportService:
             estimated_input_tokens=estimated_tokens,
             planned_chunks=planned_chunks,
             completed_chunks=checkpoint.completed_chunk_count,
-            ai_request_count=spent,
+            ai_request_count=state.window_requests,
             ai_request_limit=AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
+            ai_request_total=state.total_requests,
+            quota_window=state.window,
             last_stage=checkpoint.stage,
-            retry_kind=retry_kind,
-            retry_at=retry_at,
+            retry_kind=state.retry_kind,
+            retry_at=state.retry_at,
         )
 
     async def republish(self, report_date: date) -> ReportRunResult:
@@ -683,8 +712,10 @@ class DailyReportService:
         async with self.bot.database.session_factory() as session:
             reports = DailyReportRepository(session)
             existing = await reports.get(guild_id, report_date)
-            spent, retry_kind_value, retry_at_value, checkpoint = _load_ai_state(existing)
-            stored_kind = _parse_retry_kind(retry_kind_value)
+            ai_state = _load_ai_state(existing, current)
+            spent = ai_state.window_requests
+            retry_at_value = ai_state.retry_at
+            stored_kind = _parse_retry_kind(ai_state.retry_kind)
             budget_limit = (
                 AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
                 if automatic
@@ -701,11 +732,13 @@ class DailyReportService:
                     "완료된 일일 리포트가 이미 있습니다.",
                 )
             if spent >= budget_limit:
+                # The budget is per quota window, so this clears at the next reset
+                # instead of blocking the report for good.
                 return ReportRunResult(
                     "limit_reached",
-                    "이 날짜의 Gemini 호출 상한에 도달했습니다.",
-                    retry_kind=stored_kind,
-                    retry_at=retry_at_value,
+                    "이번 quota 구간의 Gemini 호출 상한에 도달했습니다.",
+                    retry_kind=AIRetryKind.BUDGET_EXHAUSTED,
+                    retry_at=next_quota_window_start(current),
                     automatic_ai_requests=spent,
                 )
             if automatic and retry_at_value is not None and current < retry_at_value:
@@ -788,9 +821,8 @@ class DailyReportService:
             self.bot,
             guild_id,
             report_date,
-            request_count=spent,
+            state=ai_state,
             limit=budget_limit,
-            checkpoint=checkpoint,
             pacer=self.pacer_factory(),
         )
         try:
@@ -862,18 +894,22 @@ class DailyReportService:
                     await repository.save_ai_failure(
                         stored,
                         request_count=spent_now,
+                        total_requests=ai_session.total_requests,
+                        quota_window=ai_session.window,
                         state_json=ai_session.encoded_state(),
                         retry_kind=retry_kind.value,
                         retry_at=retry_at,
                     )
             logger.exception(
                 "Daily report generation failed safely (date=%s retry_kind=%s retry_at=%s "
-                "ai_requests=%s/%s stage=%s completed_chunks=%s)",
+                "window=%s ai_requests=%s/%s total=%s stage=%s completed_chunks=%s)",
                 report_date,
                 retry_kind.value,
                 retry_at.isoformat(),
+                ai_session.window.isoformat(),
                 spent_now,
                 budget_limit,
+                ai_session.total_requests,
                 ai_session.checkpoint.stage,
                 ai_session.checkpoint.completed_chunk_count,
             )
@@ -895,30 +931,46 @@ def _parse_retry_kind(value: str | None) -> AIRetryKind | None:
         return None
 
 
-def _load_ai_state(
-    report: Any | None,
-) -> tuple[int, str | None, datetime | None, SummaryCheckpoint]:
-    """Read the persisted budget and checkpoint, falling back to the legacy state.
+def _load_ai_state(report: Any | None, now: datetime) -> ReportAIState:
+    """Read the persisted budget and checkpoint for the current quota window.
 
-    Reports written by the previous build encoded their counter inside
-    error_message, so those rows keep their spent-request count across this
-    deploy instead of silently restarting at zero.
+    The budget is counted per Pacific quota window, so a counter left over from an
+    earlier window starts again at zero while the lifetime total is preserved for
+    auditing. Reports written by the previous build encoded their counter inside
+    error_message; those are attributed to the window they were last written in.
     """
+    current_window = quota_window(now)
     if report is None:
-        return 0, None, None, SummaryCheckpoint()
-    spent = max(0, int(getattr(report, "ai_request_count", 0) or 0))
+        return ReportAIState(window=current_window, checkpoint=SummaryCheckpoint())
+
+    stored_window = getattr(report, "ai_quota_window", None)
+    window_requests = max(0, int(getattr(report, "ai_request_count", 0) or 0))
+    total_requests = max(0, int(getattr(report, "ai_request_total", 0) or 0))
     retry_kind = getattr(report, "ai_retry_kind", None)
     retry_at = getattr(report, "ai_retry_at", None)
     if retry_at is not None:
         retry_at = ensure_utc(retry_at)
     checkpoint = decode_checkpoint(getattr(report, "ai_state_json", "") or "")
-    if spent == 0 and retry_kind is None:
+
+    if window_requests == 0 and total_requests == 0 and retry_kind is None:
         legacy = decode_retry_state(getattr(report, "error_message", None))
         if legacy.request_count or legacy.retry_at is not None:
-            spent = legacy.request_count
+            window_requests = total_requests = legacy.request_count
             retry_kind = legacy.kind.value if legacy.kind is not None else None
             retry_at = legacy.retry_at
-    return spent, retry_kind, retry_at, checkpoint
+            updated_at = getattr(report, "updated_at", None)
+            stored_window = quota_window(ensure_utc(updated_at)) if updated_at else None
+
+    if stored_window != current_window:
+        window_requests = 0
+    return ReportAIState(
+        window=current_window,
+        window_requests=window_requests,
+        total_requests=total_requests,
+        retry_kind=retry_kind,
+        retry_at=retry_at,
+        checkpoint=checkpoint,
+    )
 
 
 def _safe_error_summary(error: BaseException) -> str:

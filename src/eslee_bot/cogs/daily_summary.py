@@ -327,7 +327,10 @@ def _diagnostics_text(diagnostics: ReportDiagnostics, timezone: Any) -> str:
         f"• 대상 날짜 메시지: {diagnostics.message_count:,}개",
         f"• 예상 입력 토큰: 약 {diagnostics.estimated_input_tokens:,} (상한 추정)",
         f"• 예상 청크: {diagnostics.planned_chunks}개 (완료 {diagnostics.completed_chunks}개)",
-        f"• Gemini 호출: {diagnostics.ai_request_count}/{diagnostics.ai_request_limit}회",
+        f"• 이번 quota 구간 Gemini 호출: "
+        f"{diagnostics.ai_request_count}/{diagnostics.ai_request_limit}회",
+        f"• quota 구간(Pacific): {diagnostics.quota_window.isoformat()}",
+        f"• 누적 호출(감사용): {diagnostics.ai_request_total}회",
         f"• 마지막 단계: {diagnostics.last_stage or '없음'}",
     ]
     if diagnostics.retry_at is not None:
