@@ -41,6 +41,8 @@ from eslee_bot.services.daily_summary_plan import (
 from eslee_bot.services.daily_summary_retry import (
     AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
     AIRetryKind,
+    next_quota_window_start,
+    quota_window,
 )
 from eslee_bot.services.daily_summary_runtime import DailyReportService
 from eslee_bot.tasks.daily_summary_scheduler import DailySummaryScheduler
@@ -157,8 +159,11 @@ async def test_a_short_day_still_costs_exactly_one_gemini_request() -> None:
         report = await stored_report(database)
         assert report is not None
         assert report.status == "completed"
-        # A completed report releases the budget for the next attempt.
-        assert report.ai_request_count == 0
+        # The request still counts against this quota window's budget.
+        assert report.ai_request_count == 1
+        assert report.ai_request_total == 1
+        assert report.ai_quota_window == quota_window(RUN_TIME)
+        assert report.ai_state_json == ""
     finally:
         await database.close()
 
@@ -461,7 +466,7 @@ async def test_status_diagnostics_expose_quota_values_without_message_content() 
         await insert_messages(database, REPORT_DATE, {10: 5, 20: 5}, first_message_id=1)
         await service.generate(REPORT_DATE, automatic=True, now=RUN_TIME)
 
-        diagnostics = await service.diagnostics(REPORT_DATE)
+        diagnostics = await service.diagnostics(REPORT_DATE, now=RUN_TIME)
 
         assert diagnostics.message_count == 10
         assert diagnostics.estimated_input_tokens > 0
@@ -469,48 +474,263 @@ async def test_status_diagnostics_expose_quota_values_without_message_content() 
         assert diagnostics.completed_chunks == 0
         assert diagnostics.ai_request_count == 2
         assert diagnostics.ai_request_limit == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+        assert diagnostics.ai_request_total == 2
+        assert diagnostics.quota_window == quota_window(RUN_TIME)
         assert diagnostics.retry_kind == AIRetryKind.TRANSIENT.value
         assert diagnostics.retry_at is not None
     finally:
         await database.close()
 
 
+# The report that was stuck in production: written by the previous build with a
+# 22-request counter, failed, and waiting on a daily-quota cooldown.
+STUCK_DATE = date(2026, 7, 31)
+STUCK_LEGACY_STATE = (
+    'auto_retry:{"error":"APIError (code=429)","kind":"daily_quota",'
+    '"request_count":22,"retry_at":"2026-08-01T07:05:00+00:00"}'
+)
+# 2026-07-31 14:10 Pacific, the window the 22 requests were actually spent in.
+STUCK_LAST_WRITE = datetime(2026, 7, 31, 21, 10, tzinfo=UTC)
+QUOTA_RESET = datetime(2026, 8, 1, 7, 5, tzinfo=UTC)
+
+
+async def seed_stuck_legacy_report(database: Database) -> None:
+    await insert_messages(database, STUCK_DATE, {10: 5, 20: 5}, first_message_id=1)
+    async with database.session_factory() as session:
+        repository = DailyReportRepository(session)
+        report = await repository.claim(
+            guild_id=100,
+            report_date=STUCK_DATE,
+            source_channel_id=200,
+            report_channel_id=300,
+            regenerate=False,
+        )
+        await repository.mark_failed(report, STUCK_LEGACY_STATE)
+    # updated_at is server-generated, so pin it to the window that spent the 22.
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "UPDATE daily_reports SET updated_at = ? WHERE report_date = ?",
+            (STUCK_LAST_WRITE.isoformat(sep=" "), STUCK_DATE.isoformat()),
+        )
+
+
+async def stuck_report(database: Database):  # type: ignore[no-untyped-def]
+    async with database.session_factory() as session:
+        return await DailyReportRepository(session).get(100, STUCK_DATE)
+
+
 @pytest.mark.asyncio
-async def test_a_report_written_by_the_previous_build_keeps_its_spent_requests() -> None:
+async def test_a_legacy_counter_blocks_only_inside_its_own_quota_window() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     generate = AsyncMock(side_effect=[final_response()])
     service = build_service(database, build_provider(generate))
-    legacy_state = (
-        'auto_retry:{"error":"APIError (code=503)","kind":"transient",'
-        '"request_count":8,"retry_at":"2026-07-29T21:20:00+00:00"}'
-    )
     try:
-        await insert_messages(database, REPORT_DATE, {10: 5, 20: 5}, first_message_id=1)
-        async with database.session_factory() as session:
-            repository = DailyReportRepository(session)
-            report = await repository.claim(
-                guild_id=100,
-                report_date=REPORT_DATE,
-                source_channel_id=200,
-                report_channel_id=300,
-                regenerate=False,
-            )
-            await repository.mark_failed(report, legacy_state)
+        await seed_stuck_legacy_report(database)
 
-        # The legacy counter already reached the budget, so no request is sent.
-        result = await service.generate(
-            REPORT_DATE,
-            regenerate=True,
+        # Same Pacific window as the 22 requests: the budget really is spent.
+        blocked = await service.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
             automatic=True,
-            now=RUN_TIME + timedelta(hours=1),
+            now=STUCK_LAST_WRITE + timedelta(minutes=30),
         )
 
-        assert result.status == "limit_reached"
-        assert result.automatic_ai_requests == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+        assert blocked.status == "limit_reached"
+        assert blocked.automatic_ai_requests == 22
+        assert blocked.retry_kind is AIRetryKind.BUDGET_EXHAUSTED
+        # It waits for the quota reset instead of blocking the report for good.
+        assert blocked.retry_at == QUOTA_RESET
         generate.assert_not_awaited()
     finally:
         await database.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_legacy_report_catches_up_once_the_quota_window_rolls_over() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    generate = AsyncMock(side_effect=[final_response()])
+    publisher = FakePublisher()
+    service = build_service(database, build_provider(generate), publisher)
+    try:
+        await seed_stuck_legacy_report(database)
+
+        # Still inside the daily-quota cooldown: nothing is sent.
+        waiting = await service.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
+            automatic=True,
+            now=QUOTA_RESET - timedelta(minutes=1),
+        )
+        assert waiting.status == "cooldown"
+        generate.assert_not_awaited()
+
+        # The window has rolled over, so the catch-up is allowed exactly once.
+        caught_up = await service.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
+            automatic=True,
+            now=QUOTA_RESET + timedelta(minutes=1),
+        )
+
+        assert caught_up.status == "completed"
+        assert generate.await_count == 1
+        assert len(publisher.calls) == 1
+        report = await stuck_report(database)
+        assert report is not None
+        assert report.status == "completed"
+        # The new window counts from zero...
+        assert report.ai_request_count == 1
+        assert report.ai_quota_window == date(2026, 8, 1)
+        # ...while the 22 earlier requests stay on record for auditing.
+        assert report.ai_request_total == 23
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_the_catch_up_budget_is_a_full_eight_in_the_new_window() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    generate = AsyncMock(side_effect=errors.APIError(503, {"message": "unavailable"}))
+    service = build_service(database, build_provider(generate))
+    scheduler = DailySummaryScheduler(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        service,
+        poll_seconds=60,
+    )
+    try:
+        await seed_stuck_legacy_report(database)
+        start = QUOTA_RESET + timedelta(minutes=1)
+
+        # Every tick stays inside the new Pacific window (it lasts 24 hours).
+        for attempt in range(20):
+            await scheduler.tick(now=start + timedelta(minutes=15 * attempt))
+
+        # A fresh budget, and not one request more.
+        assert generate.await_count == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+        report = await stuck_report(database)
+        assert report is not None
+        assert report.ai_request_count == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+        assert report.ai_request_total == 22 + AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_no_longer_ends_the_scheduler_day() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    generate = AsyncMock(side_effect=[final_response()])
+    service = build_service(database, build_provider(generate))
+    scheduler = DailySummaryScheduler(
+        FakeBot(database),  # type: ignore[arg-type]
+        summary_config(),
+        service,
+        poll_seconds=60,
+    )
+    try:
+        await seed_stuck_legacy_report(database)
+
+        # 06:02 KST on 2026-08-01 is still the exhausted window, so this is a
+        # no-op that must not mark the whole local day as finished.
+        morning = datetime(2026, 8, 1, 6, 2, tzinfo=KST).astimezone(UTC)
+        await scheduler.tick(now=morning)
+        generate.assert_not_awaited()
+
+        # 16:06 KST the same local day is the next window: the catch-up runs.
+        await scheduler.tick(now=QUOTA_RESET + timedelta(minutes=1))
+
+        assert generate.await_count == 1
+        report = await stuck_report(database)
+        assert report is not None
+        assert report.status == "completed"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_keeps_the_quota_window_basis() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    generate = AsyncMock(side_effect=errors.APIError(503, {"message": "unavailable"}))
+    provider = build_provider(generate)
+    service = build_service(database, provider)
+    try:
+        await seed_stuck_legacy_report(database)
+        start = QUOTA_RESET + timedelta(minutes=1)
+
+        for attempt in range(4):
+            await service.generate(
+                STUCK_DATE,
+                replace_preview=True,
+                recover_incomplete=True,
+                automatic=True,
+                now=start + timedelta(minutes=20 * attempt),
+            )
+        assert generate.await_count == 8
+
+        # A restart re-reads the window and its counter from the database only.
+        restarted = build_service(database, provider)
+        blocked = await restarted.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
+            automatic=True,
+            now=start + timedelta(hours=2),
+        )
+
+        assert blocked.status == "limit_reached"
+        assert blocked.automatic_ai_requests == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+        assert generate.await_count == 8
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_a_completed_report_is_not_regenerated_after_a_window_rollover() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    generate = AsyncMock(side_effect=[final_response()])
+    service = build_service(database, build_provider(generate))
+    try:
+        await seed_stuck_legacy_report(database)
+        first = await service.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
+            automatic=True,
+            now=QUOTA_RESET + timedelta(minutes=1),
+        )
+        assert first.status == "completed"
+
+        # A later window must not re-run a report that already succeeded.
+        again = await service.generate(
+            STUCK_DATE,
+            replace_preview=True,
+            recover_incomplete=True,
+            automatic=True,
+            now=QUOTA_RESET + timedelta(days=1),
+        )
+
+        assert again.status == "already_completed"
+        assert generate.await_count == 1
+    finally:
+        await database.close()
+
+
+def test_quota_window_follows_the_pacific_midnight_reset() -> None:
+    # 06:02 KST on 2026-08-01 is still 2026-07-31 in Pacific.
+    morning = datetime(2026, 8, 1, 6, 2, tzinfo=KST).astimezone(UTC)
+    assert quota_window(morning) == date(2026, 7, 31)
+    # 16:06 KST the same day has crossed into the next window.
+    assert quota_window(QUOTA_RESET + timedelta(minutes=1)) == date(2026, 8, 1)
+    assert next_quota_window_start(morning) == QUOTA_RESET
 
 
 def test_checkpoint_round_trips_through_json() -> None:
@@ -585,10 +805,18 @@ async def test_added_columns_are_applied_to_an_existing_database() -> None:
                 report_channel_id=300,
                 regenerate=False,
             )
-            await repository.save_ai_progress(report, request_count=3, state_json="{}")
+            await repository.save_ai_progress(
+                report,
+                request_count=3,
+                total_requests=25,
+                quota_window=quota_window(RUN_TIME),
+                state_json="{}",
+            )
         restored = await stored_report(database)
         assert restored is not None
         assert restored.ai_request_count == 3
+        assert restored.ai_request_total == 25
+        assert restored.ai_quota_window == quota_window(RUN_TIME)
         assert restored.ai_state_json == "{}"
     finally:
         await database.close()

@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "daily_reports": {
         "ai_request_count": "INTEGER NOT NULL DEFAULT 0",
+        "ai_request_total": "INTEGER NOT NULL DEFAULT 0",
+        "ai_quota_window": "DATE",
         "ai_retry_kind": "VARCHAR(20)",
         "ai_retry_at": "TIMESTAMP WITH TIME ZONE",
         "ai_state_json": "TEXT NOT NULL DEFAULT ''",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -133,17 +133,34 @@ def classify_gemini_429(error: BaseException) -> tuple[AIRetryKind, float | None
     return AIRetryKind.UNKNOWN_QUOTA, None
 
 
+def quota_window(now: datetime) -> date:
+    """The Pacific date whose free-tier daily quota `now` draws from.
+
+    The window resets at Pacific midnight, which lands in the afternoon in Seoul,
+    so one window covers the tail of one Asia/Seoul report date and the start of
+    the next.
+    """
+    return now.astimezone(PACIFIC).date()
+
+
+def next_quota_window_start(now: datetime) -> datetime:
+    """When the next free-tier quota window opens, with the usual safety buffer."""
+    current = now.astimezone(UTC)
+    next_day = current.astimezone(PACIFIC).date() + timedelta(days=1)
+    reset = datetime.combine(next_day, time.min, tzinfo=PACIFIC)
+    return (reset + DAILY_QUOTA_RESET_BUFFER).astimezone(UTC)
+
+
 def next_retry_at(
     now: datetime,
     kind: AIRetryKind,
     retry_after_seconds: float | None = None,
 ) -> datetime:
     current = now.astimezone(UTC)
-    if kind is AIRetryKind.DAILY_QUOTA:
-        pacific_now = current.astimezone(PACIFIC)
-        next_day = pacific_now.date() + timedelta(days=1)
-        reset = datetime.combine(next_day, time.min, tzinfo=PACIFIC)
-        return (reset + DAILY_QUOTA_RESET_BUFFER).astimezone(UTC)
+    # Both the daily quota and the per-report budget are counted per quota
+    # window, so both wait for the same reset instead of a fixed cooldown.
+    if kind in (AIRetryKind.DAILY_QUOTA, AIRetryKind.BUDGET_EXHAUSTED):
+        return next_quota_window_start(current)
     if kind is AIRetryKind.RATE_LIMIT:
         server_delay = timedelta(seconds=max(0.0, retry_after_seconds or 0.0))
         return current + max(RATE_LIMIT_COOLDOWN, server_delay)

@@ -433,10 +433,14 @@ class DailyReportRepository:
         report: DailyReport,
         *,
         request_count: int,
+        total_requests: int,
+        quota_window: date,
         state_json: str,
     ) -> None:
-        """Persist the spent-request counter and chunk checkpoint mid-run."""
+        """Persist the quota-window counter and chunk checkpoint mid-run."""
         report.ai_request_count = request_count
+        report.ai_request_total = total_requests
+        report.ai_quota_window = quota_window
         report.ai_state_json = state_json
         await self.session.commit()
 
@@ -445,11 +449,15 @@ class DailyReportRepository:
         report: DailyReport,
         *,
         request_count: int,
+        total_requests: int,
+        quota_window: date,
         state_json: str,
         retry_kind: str | None,
         retry_at: datetime | None,
     ) -> None:
         report.ai_request_count = request_count
+        report.ai_request_total = total_requests
+        report.ai_quota_window = quota_window
         report.ai_state_json = state_json
         report.ai_retry_kind = retry_kind
         report.ai_retry_at = retry_at
@@ -522,7 +530,11 @@ class DailyReportRepository:
 
     @staticmethod
     def _clear_ai_state(report: DailyReport) -> None:
-        report.ai_request_count = 0
+        """Drop the checkpoint and cooldown once a report reaches a terminal state.
+
+        The quota-window and lifetime counters stay, so requests already spent in
+        the current window still count against its budget.
+        """
         report.ai_state_json = ""
         report.ai_retry_kind = None
         report.ai_retry_at = None
