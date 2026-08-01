@@ -34,10 +34,11 @@ FREE_TIER_RPD = 20
 PACING_REQUESTS_PER_MINUTE = 4
 PACING_TOKENS_PER_MINUTE = 200_000
 
-# A single request never carries more prompt characters than this. Combined with
-# the pessimistic token estimate below it keeps one request far under the TPM
-# ceiling while still being large enough that ordinary days need one request.
-MAX_REQUEST_INPUT_CHARS = 100_000
+# A single request never carries more prompt characters than this. Chunks are
+# made as large as the pacing token window allows so that the fewest possible
+# requests are needed, and with the pessimistic estimate below one full request
+# still fits inside a single minute's token allowance.
+MAX_REQUEST_INPUT_CHARS = PACING_TOKENS_PER_MINUTE
 
 # Deliberately pessimistic. Korean Discord transcripts tokenize at well under one
 # token per character, so treating every character as a token over-estimates and
