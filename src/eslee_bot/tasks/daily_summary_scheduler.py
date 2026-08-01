@@ -10,7 +10,7 @@ from eslee_bot.config import DailySummaryConfig
 from eslee_bot.database.repositories import DailySummaryMessageRepository
 from eslee_bot.services.daily_summary import retention_cutoff_utc, scheduled_report_date
 from eslee_bot.services.daily_summary_retry import (
-    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+    AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
     TRANSIENT_FAILURE_COOLDOWN,
 )
 
@@ -111,14 +111,14 @@ class DailySummaryScheduler:
         if result.status in {"completed", "already_completed", "skipped", "limit_reached"}:
             self._last_terminal_report_day = local_date
             self._next_report_attempt_at.pop(report_date, None)
-        elif result.automatic_ai_requests >= MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT:
+        elif result.automatic_ai_requests >= AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT:
             self._last_terminal_report_day = local_date
             logger.error(
                 "Daily summary automatic AI request limit reached "
                 "(date=%s requests=%s limit=%s)",
                 report_date,
                 result.automatic_ai_requests,
-                MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+                AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
             )
         else:
             retry_at = result.retry_at or current + TRANSIENT_FAILURE_COOLDOWN

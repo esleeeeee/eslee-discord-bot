@@ -17,6 +17,7 @@ from eslee_bot.services.daily_summary_ai import (
     GeminiConnectionResult,
     GeminiSummaryProvider,
 )
+from eslee_bot.services.daily_summary_runtime import ReportDiagnostics
 from eslee_bot.utils.permissions import require_management_permission
 
 if TYPE_CHECKING:
@@ -127,6 +128,7 @@ class DailySummaryCog(commands.Cog):
         config = self.bot.daily_summary.config
         today_count = 0
         latest_status = "없음"
+        diagnostics = None
         if config.enabled:
             now = datetime.now(UTC)
             start, end = current_day_window_utc(now, cast(Any, config.timezone))
@@ -140,6 +142,18 @@ class DailySummaryCog(commands.Cog):
                 latest = await DailyReportRepository(session).latest(cast(int, config.guild_id))
                 if latest is not None:
                     latest_status = f"{latest.report_date.isoformat()} · {latest.status}"
+            report_service = self.bot.daily_summary.report_service
+            if report_service is not None:
+                target_date = current_report_date(now, cast(Any, config.timezone)) - timedelta(
+                    days=1
+                )
+                try:
+                    diagnostics = await report_service.diagnostics(target_date)
+                except Exception as error:
+                    logger.error(
+                        "Daily summary diagnostics failed safely (error_type=%s)",
+                        type(error).__name__,
+                    )
 
         embed = discord.Embed(title="📊 하루요약 상태", color=discord.Color.blurple())
         embed.add_field(
@@ -168,6 +182,12 @@ class DailySummaryCog(commands.Cog):
         )
         embed.add_field(name="현재 집계 구간 메시지", value=f"{today_count:,}개", inline=True)
         embed.add_field(name="최근 리포트", value=latest_status, inline=False)
+        if diagnostics is not None:
+            embed.add_field(
+                name=f"🔍 {diagnostics.report_date.isoformat()} 진단",
+                value=_diagnostics_text(diagnostics, cast(Any, config.timezone)),
+                inline=False,
+            )
         if config.validation_errors:
             embed.add_field(
                 name="비활성 사유",
@@ -298,6 +318,23 @@ class DailySummaryCog(commands.Cog):
             )
             return False
         return True
+
+
+def _diagnostics_text(diagnostics: ReportDiagnostics, timezone: Any) -> str:
+    """Quota and checkpoint values only. Never Discord message content."""
+    lines = [
+        f"• 상태: {diagnostics.status}",
+        f"• 대상 날짜 메시지: {diagnostics.message_count:,}개",
+        f"• 예상 입력 토큰: 약 {diagnostics.estimated_input_tokens:,} (상한 추정)",
+        f"• 예상 청크: {diagnostics.planned_chunks}개 (완료 {diagnostics.completed_chunks}개)",
+        f"• Gemini 호출: {diagnostics.ai_request_count}/{diagnostics.ai_request_limit}회",
+        f"• 마지막 단계: {diagnostics.last_stage or '없음'}",
+    ]
+    if diagnostics.retry_at is not None:
+        kind = diagnostics.retry_kind or "unknown"
+        local = diagnostics.retry_at.astimezone(timezone)
+        lines.append(f"• 대기 해제: {local:%Y-%m-%d %H:%M} ({kind})")
+    return "\n".join(lines)
 
 
 def _result_message(status: str, detail: str) -> str:

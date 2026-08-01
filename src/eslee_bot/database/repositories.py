@@ -428,6 +428,51 @@ class DailyReportRepository:
         await self.session.refresh(report)
         return report
 
+    async def save_ai_progress(
+        self,
+        report: DailyReport,
+        *,
+        request_count: int,
+        state_json: str,
+    ) -> None:
+        """Persist the spent-request counter and chunk checkpoint mid-run."""
+        report.ai_request_count = request_count
+        report.ai_state_json = state_json
+        await self.session.commit()
+
+    async def save_ai_failure(
+        self,
+        report: DailyReport,
+        *,
+        request_count: int,
+        state_json: str,
+        retry_kind: str | None,
+        retry_at: datetime | None,
+    ) -> None:
+        report.ai_request_count = request_count
+        report.ai_state_json = state_json
+        report.ai_retry_kind = retry_kind
+        report.ai_retry_at = retry_at
+        await self.session.commit()
+
+    async def quota_blocked_until(self, guild_id: int, now: datetime) -> datetime | None:
+        """Latest daily-quota cooldown across every report of this guild.
+
+        One Pacific quota day spans two Asia/Seoul report dates, so a daily-quota
+        429 on one date must also hold back the next date's automatic run.
+        """
+        blocked = await self.session.scalar(
+            select(func.max(DailyReport.ai_retry_at)).where(
+                DailyReport.guild_id == guild_id,
+                DailyReport.ai_retry_kind == "daily_quota",
+                DailyReport.ai_retry_at.is_not(None),
+            )
+        )
+        if blocked is None:
+            return None
+        blocked = ensure_utc(blocked)
+        return blocked if blocked > ensure_utc(now) else None
+
     async def mark_skipped(
         self,
         report: DailyReport,
@@ -441,6 +486,7 @@ class DailyReportRepository:
         report.participant_count = participant_count
         report.status = "preview_skipped" if preview else "skipped"
         report.error_message = reason
+        self._clear_ai_state(report)
         await self.session.commit()
 
     async def mark_completed(
@@ -469,7 +515,17 @@ class DailyReportRepository:
         report.discord_message_ids_json = json.dumps(discord_message_ids)
         report.status = "preview_completed" if preview else "completed"
         report.error_message = None
+        # The quota already spent produced a result, so the next attempt for this
+        # date (a final after a preview, or a manual regenerate) starts fresh.
+        self._clear_ai_state(report)
         await self.session.commit()
+
+    @staticmethod
+    def _clear_ai_state(report: DailyReport) -> None:
+        report.ai_request_count = 0
+        report.ai_state_json = ""
+        report.ai_retry_kind = None
+        report.ai_retry_at = None
 
     async def mark_failed(
         self,

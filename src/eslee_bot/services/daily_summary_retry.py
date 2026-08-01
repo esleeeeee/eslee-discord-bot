@@ -8,8 +8,14 @@ from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
 
-MAX_AI_REQUESTS_PER_SUMMARY_RUN = 12
-MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT = 24
+# The free tier allows 20 requests per day and one Pacific quota day spans two
+# Asia/Seoul report dates, so a single report may never approach that number.
+AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT = 8
+# A human running /하루요약 may spend a little more, but from the same counter.
+MANUAL_AI_REQUEST_BUDGET_PER_REPORT = 12
+MAX_AI_REQUESTS_PER_SUMMARY_RUN = MANUAL_AI_REQUEST_BUDGET_PER_REPORT
+# One extra attempt only; every attempt is charged to the report budget.
+TRANSIENT_ATTEMPTS_PER_REQUEST = 2
 RATE_LIMIT_COOLDOWN = timedelta(minutes=10)
 UNKNOWN_QUOTA_COOLDOWN = timedelta(hours=1)
 TRANSIENT_FAILURE_COOLDOWN = timedelta(minutes=15)
@@ -26,6 +32,7 @@ class AIRetryKind(StrEnum):
     TRANSIENT = "transient"
     NON_RETRYABLE = "non_retryable"
     RUN_LIMIT = "run_limit"
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 class AIRequestFailure(RuntimeError):
@@ -147,22 +154,12 @@ def next_retry_at(
     return current + NON_RETRYABLE_FAILURE_COOLDOWN
 
 
-def encode_retry_state(state: AutomaticRetryState) -> str:
-    payload = {
-        "request_count": state.request_count,
-        "kind": state.kind.value if state.kind is not None else None,
-        "retry_at": state.retry_at.astimezone(UTC).isoformat() if state.retry_at else None,
-        "error": state.error_summary,
-    }
-    return RETRY_STATE_PREFIX + json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
 def decode_retry_state(value: str | None) -> AutomaticRetryState:
+    """Read the retry state the previous build encoded into `error_message`.
+
+    Reports written before the dedicated columns existed keep their spent-request
+    count and cooldown across the deploy instead of restarting at zero.
+    """
     if not value or not value.startswith(RETRY_STATE_PREFIX):
         return AutomaticRetryState()
     try:
