@@ -593,6 +593,89 @@ async def test_a_stuck_legacy_report_catches_up_once_the_quota_window_rolls_over
 
 
 @pytest.mark.asyncio
+async def test_deploying_after_the_reset_catches_up_on_the_very_first_tick() -> None:
+    """A build that only starts after the reset must not wait a further window.
+
+    The window is resolved from the current instant, not from when the process
+    started, so the stale counter is already superseded on the first tick.
+    """
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    try:
+        await seed_stuck_legacy_report(database)
+
+        # The whole process is new: no in-memory scheduler or service state
+        # survives from before the reset.
+        generate = AsyncMock(side_effect=[final_response()])
+        publisher = FakePublisher()
+        service = build_service(database, build_provider(generate), publisher)
+        scheduler = DailySummaryScheduler(
+            FakeBot(database),  # type: ignore[arg-type]
+            summary_config(),
+            service,
+            poll_seconds=60,
+        )
+
+        # 16:20 KST: both the quota reset (16:05) and the cooldown are past.
+        started_at = datetime(2026, 8, 1, 16, 20, tzinfo=KST).astimezone(UTC)
+        assert started_at > QUOTA_RESET
+        assert quota_window(started_at) == date(2026, 8, 1)
+
+        await scheduler.tick(now=started_at)
+
+        assert generate.await_count == 1
+        assert len(publisher.calls) == 1
+        report = await stuck_report(database)
+        assert report is not None
+        assert report.status == "completed"
+        assert report.ai_quota_window == date(2026, 8, 1)
+        assert report.ai_request_count == 1
+        assert report.ai_request_total == 23
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_a_deploy_before_the_reset_still_catches_up_the_same_day() -> None:
+    """A pre-reset tick must not poison the post-reset catch-up.
+
+    The blocked run happens in the old window and writes nothing, so the reset
+    still hands the report a fresh budget on the same local day.
+    """
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.initialize()
+    try:
+        await seed_stuck_legacy_report(database)
+        generate = AsyncMock(side_effect=[final_response()])
+        service = build_service(database, build_provider(generate))
+        scheduler = DailySummaryScheduler(
+            FakeBot(database),  # type: ignore[arg-type]
+            summary_config(),
+            service,
+            poll_seconds=60,
+        )
+
+        # Deployed at 10:00 KST, still inside the exhausted window.
+        await scheduler.tick(now=datetime(2026, 8, 1, 10, 0, tzinfo=KST).astimezone(UTC))
+        generate.assert_not_awaited()
+        blocked = await stuck_report(database)
+        assert blocked is not None
+        # The refusal left the stored state untouched.
+        assert blocked.status == "failed"
+        assert blocked.ai_request_count == 0
+        assert blocked.ai_quota_window is None
+
+        await scheduler.tick(now=datetime(2026, 8, 1, 16, 20, tzinfo=KST).astimezone(UTC))
+
+        assert generate.await_count == 1
+        report = await stuck_report(database)
+        assert report is not None
+        assert report.status == "completed"
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_the_catch_up_budget_is_a_full_eight_in_the_new_window() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
