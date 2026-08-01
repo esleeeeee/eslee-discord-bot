@@ -27,8 +27,12 @@ from eslee_bot.services.daily_summary_ai import (
     AIUserSummary,
     GeminiSummaryProvider,
 )
+from eslee_bot.services.daily_summary_plan import (
+    MAX_REQUEST_INPUT_CHARS,
+    build_summary_plan,
+)
 from eslee_bot.services.daily_summary_retry import (
-    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+    AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
 )
 from eslee_bot.services.daily_summary_runtime import (
     DailyReportService,
@@ -72,10 +76,19 @@ class FakeProvider:
         if not block:
             self.release.set()
 
-    async def summarize(self, messages, targets, *, timezone):  # type: ignore[no-untyped-def]
+    def plan(self, messages, targets, *, timezone):  # type: ignore[no-untyped-def]
+        return build_summary_plan(
+            messages,
+            targets,
+            timezone,
+            transcript_budget_characters=MAX_REQUEST_INPUT_CHARS,
+        )
+
+    async def summarize(self, messages, targets, *, timezone, session):  # type: ignore[no-untyped-def]
         self.calls += 1
         self.started.set()
         await self.release.wait()
+        await session.reserve(1)
         return GeneratedSummary(
             daily_summary="하루 전체 요약이다.",
             user_summaries=tuple(
@@ -805,7 +818,7 @@ async def test_automatic_ai_requests_have_a_persisted_per_report_limit() -> None
         for attempt in range(12):
             await scheduler.tick(now=first + timedelta(minutes=15 * attempt))
 
-        assert generate.await_count == MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT
+        assert generate.await_count == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
 
         restarted_scheduler = DailySummaryScheduler(
             FakeBot(database),  # type: ignore[arg-type]
@@ -814,6 +827,6 @@ async def test_automatic_ai_requests_have_a_persisted_per_report_limit() -> None
             poll_seconds=60,
         )
         await restarted_scheduler.tick(now=first + timedelta(hours=5))
-        assert generate.await_count == MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT
+        assert generate.await_count == AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
     finally:
         await database.close()

@@ -22,4 +22,11 @@ All notable changes to this project will be documented in this file.
 - Explicit global command sync and guild-scoped announcement repository operations.
 - Multi-guild data-isolation and optional development-guild regression tests.
 - Northflank `sslmode` translation for SQLAlchemy's asyncpg driver.
+- Free-tier aware Gemini budgeting for daily summaries: a pre-flight request estimate,
+  a persisted per-report-date call counter shared by automatic, manual, and catch-up
+  runs, chunk-level checkpoints that survive restarts, RPM/TPM pacing, and a
+  guild-wide daily-quota hold until the Pacific reset.
+- `/하루요약 상태` now reports message count, estimated input tokens, planned and
+  completed chunks, Gemini calls against the cap, the last failed stage, and the
+  cooldown end time.
 - Docker, Docker Compose, Ruff, pytest, and GitHub Actions support.

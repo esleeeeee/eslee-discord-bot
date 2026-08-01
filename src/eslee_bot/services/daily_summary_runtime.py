@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -28,13 +29,20 @@ from eslee_bot.services.daily_summary_ai import (
     SummaryProvider,
     is_retryable_ai_error,
 )
+from eslee_bot.services.daily_summary_plan import (
+    CheckpointEntry,
+    RequestPacer,
+    SummaryCheckpoint,
+    SummaryPlan,
+    decode_checkpoint,
+    encode_checkpoint,
+)
 from eslee_bot.services.daily_summary_retry import (
-    MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT,
+    AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
+    MANUAL_AI_REQUEST_BUDGET_PER_REPORT,
     AIRequestFailure,
     AIRetryKind,
-    AutomaticRetryState,
     decode_retry_state,
-    encode_retry_state,
     next_retry_at,
 )
 from eslee_bot.utils.time import ensure_utc
@@ -63,6 +71,104 @@ class ReportRunResult:
     retry_kind: AIRetryKind | None = None
     retry_at: datetime | None = None
     automatic_ai_requests: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ReportDiagnostics:
+    report_date: date
+    status: str
+    message_count: int
+    estimated_input_tokens: int
+    planned_chunks: int
+    completed_chunks: int
+    ai_request_count: int
+    ai_request_limit: int
+    last_stage: str | None
+    retry_kind: str | None
+    retry_at: datetime | None
+
+
+class ReportAISession:
+    """Per-report Gemini budget and chunk checkpoint, persisted between runs."""
+
+    def __init__(
+        self,
+        bot: EsleeBot,
+        guild_id: int,
+        report_date: date,
+        *,
+        request_count: int,
+        limit: int,
+        checkpoint: SummaryCheckpoint,
+        pacer: RequestPacer | None = None,
+    ) -> None:
+        self.bot = bot
+        self.guild_id = guild_id
+        self.report_date = report_date
+        self.request_count = request_count
+        self.limit = limit
+        self.checkpoint = checkpoint
+        self._pacer = pacer or RequestPacer()
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit - self.request_count)
+
+    def ensure_budget(self, planned_requests: int) -> None:
+        if planned_requests > self.remaining:
+            raise AIRequestFailure(AIRetryKind.BUDGET_EXHAUSTED)
+
+    async def reserve(self, estimated_tokens: int) -> None:
+        if self.remaining <= 0:
+            raise AIRequestFailure(AIRetryKind.BUDGET_EXHAUSTED)
+        await self._pacer.acquire(estimated_tokens)
+        self.request_count += 1
+        await self._persist()
+
+    def completed_chunk(self, index: int, fingerprint: str) -> dict[str, Any] | None:
+        return self.checkpoint.chunk(index, fingerprint)
+
+    async def store_chunk(self, index: int, fingerprint: str, payload: dict[str, Any]) -> None:
+        self.checkpoint.chunks[index] = CheckpointEntry(fingerprint=fingerprint, payload=payload)
+        await self._persist()
+
+    def completed_final(self, fingerprint: str) -> dict[str, Any] | None:
+        return self.checkpoint.final_result(fingerprint)
+
+    async def store_final(self, fingerprint: str, payload: dict[str, Any]) -> None:
+        self.checkpoint.final = CheckpointEntry(fingerprint=fingerprint, payload=payload)
+        await self._persist()
+
+    async def start_plan(self, plan: SummaryPlan) -> None:
+        self.checkpoint.chunk_total = plan.chunk_count
+        self.checkpoint.stage = "plan"
+        # Drop checkpoints whose transcript changed since the previous attempt.
+        valid = {chunk.index: chunk.fingerprint for chunk in plan.chunks}
+        self.checkpoint.chunks = {
+            index: entry
+            for index, entry in self.checkpoint.chunks.items()
+            if valid.get(index) == entry.fingerprint
+        }
+        await self._persist()
+
+    async def set_stage(self, stage: str) -> None:
+        self.checkpoint.stage = stage
+        await self._persist()
+
+    def encoded_state(self) -> str:
+        return encode_checkpoint(self.checkpoint)
+
+    async def _persist(self) -> None:
+        async with self.bot.database.session_factory() as session:
+            repository = DailyReportRepository(session)
+            stored = await repository.get(self.guild_id, self.report_date)
+            if stored is None:
+                return
+            await repository.save_ai_progress(
+                stored,
+                request_count=self.request_count,
+                state_json=self.encoded_state(),
+            )
 
 
 class DiscordPublishError(RuntimeError):
@@ -448,12 +554,55 @@ class DailyReportService:
         config: DailySummaryConfig,
         provider: SummaryProvider,
         publisher: DailyReportPublisher,
+        *,
+        pacer_factory: Callable[[], RequestPacer] = RequestPacer,
     ) -> None:
         self.bot = bot
         self.config = config
         self.provider = provider
         self.publisher = publisher
+        self.pacer_factory = pacer_factory
         self._locks: dict[date, asyncio.Lock] = {}
+
+    async def diagnostics(self, report_date: date) -> ReportDiagnostics:
+        """Read-only quota and checkpoint view for /하루요약 상태."""
+        guild_id = cast(int, self.config.guild_id)
+        source_channel_id = cast(int, self.config.source_channel_id)
+        timezone = cast(Any, self.config.timezone)
+        start, end = day_bounds_utc(report_date, timezone)
+        async with self.bot.database.session_factory() as session:
+            stored = await DailyReportRepository(session).get(guild_id, report_date)
+            messages = await DailySummaryMessageRepository(session).list_between(
+                guild_id,
+                source_channel_id,
+                start,
+                end,
+            )
+        spent, retry_kind, retry_at, checkpoint = _load_ai_state(stored)
+        estimated_tokens = 0
+        planned_chunks = checkpoint.chunk_total
+        if messages:
+            targets = select_summary_targets(
+                messages,
+                min_messages=self.config.min_user_messages,
+                max_users=self.config.max_users,
+            )
+            plan = self.provider.plan(messages, targets, timezone=timezone)
+            estimated_tokens = plan.estimated_input_tokens
+            planned_chunks = plan.chunk_count
+        return ReportDiagnostics(
+            report_date=report_date,
+            status=stored.status if stored is not None else "없음",
+            message_count=len(messages),
+            estimated_input_tokens=estimated_tokens,
+            planned_chunks=planned_chunks,
+            completed_chunks=checkpoint.completed_chunk_count,
+            ai_request_count=spent,
+            ai_request_limit=AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT,
+            last_stage=checkpoint.stage,
+            retry_kind=retry_kind,
+            retry_at=retry_at,
+        )
 
     async def republish(self, report_date: date) -> ReportRunResult:
         lock = self._locks.setdefault(report_date, asyncio.Lock())
@@ -534,8 +683,12 @@ class DailyReportService:
         async with self.bot.database.session_factory() as session:
             reports = DailyReportRepository(session)
             existing = await reports.get(guild_id, report_date)
-            retry_state = decode_retry_state(
-                existing.error_message if existing is not None else None
+            spent, retry_kind_value, retry_at_value, checkpoint = _load_ai_state(existing)
+            stored_kind = _parse_retry_kind(retry_kind_value)
+            budget_limit = (
+                AUTOMATIC_AI_REQUEST_BUDGET_PER_REPORT
+                if automatic
+                else MANUAL_AI_REQUEST_BUDGET_PER_REPORT
             )
             if (
                 recover_incomplete
@@ -547,26 +700,34 @@ class DailyReportService:
                     "already_completed",
                     "완료된 일일 리포트가 이미 있습니다.",
                 )
-            if automatic and retry_state.request_count >= MAX_AUTOMATIC_AI_REQUESTS_PER_REPORT:
+            if spent >= budget_limit:
                 return ReportRunResult(
                     "limit_reached",
-                    "이 날짜의 자동 AI 호출 상한에 도달했습니다.",
-                    retry_kind=retry_state.kind,
-                    retry_at=retry_state.retry_at,
-                    automatic_ai_requests=retry_state.request_count,
+                    "이 날짜의 Gemini 호출 상한에 도달했습니다.",
+                    retry_kind=stored_kind,
+                    retry_at=retry_at_value,
+                    automatic_ai_requests=spent,
                 )
-            if (
-                automatic
-                and retry_state.retry_at is not None
-                and current < retry_state.retry_at
-            ):
+            if automatic and retry_at_value is not None and current < retry_at_value:
                 return ReportRunResult(
                     "cooldown",
                     "Gemini 재시도 대기 중입니다.",
-                    retry_kind=retry_state.kind,
-                    retry_at=retry_state.retry_at,
-                    automatic_ai_requests=retry_state.request_count,
+                    retry_kind=stored_kind,
+                    retry_at=retry_at_value,
+                    automatic_ai_requests=spent,
                 )
+            if automatic:
+                # One Pacific quota day covers two Asia/Seoul report dates, so a
+                # daily-quota 429 on any date must hold back this date too.
+                quota_block = await reports.quota_blocked_until(guild_id, current)
+                if quota_block is not None:
+                    return ReportRunResult(
+                        "cooldown",
+                        "Gemini 일일 할당량이 초기화될 때까지 대기 중입니다.",
+                        retry_kind=AIRetryKind.DAILY_QUOTA,
+                        retry_at=quota_block,
+                        automatic_ai_requests=spent,
+                    )
             recover_existing = recover_incomplete and existing is not None
             try:
                 report = await reports.claim(
@@ -623,8 +784,22 @@ class DailyReportService:
             max_users=self.config.max_users,
         )
         published_ids: list[int] | None = None
+        ai_session = ReportAISession(
+            self.bot,
+            guild_id,
+            report_date,
+            request_count=spent,
+            limit=budget_limit,
+            checkpoint=checkpoint,
+            pacer=self.pacer_factory(),
+        )
         try:
-            generated = await self.provider.summarize(messages, targets, timezone=timezone)
+            generated = await self.provider.summarize(
+                messages,
+                targets,
+                timezone=timezone,
+                session=ai_session,
+            )
             display_names = {target.user_id: target.display_name for target in targets}
             embeds = build_report_embeds(
                 report_date,
@@ -633,6 +808,7 @@ class DailyReportService:
                 display_names,
                 preview=preview,
             )
+            await ai_session.set_stage("publish")
             published_ids = await self.publisher.publish(embeds, publish_existing_ids)
             async with self.bot.database.session_factory() as session:
                 stored = await DailyReportRepository(session).get(guild_id, report_date)
@@ -655,13 +831,14 @@ class DailyReportService:
                     preview=preview,
                 )
             logger.info(
-                "Daily report completed "
-                "(date=%s messages=%s participants=%s api_requests=%s chunked=%s)",
+                "Daily report completed (date=%s messages=%s participants=%s "
+                "api_requests=%s reused=%s chunks=%s)",
                 report_date,
                 stats.message_count,
                 stats.participant_count,
                 generated.api_request_count,
-                generated.used_chunk_fallback,
+                generated.reused_request_count,
+                generated.chunk_count,
             )
             return ReportRunResult("completed", "일일 리포트를 생성했습니다.")
         except asyncio.CancelledError:
@@ -671,47 +848,77 @@ class DailyReportService:
             safe_error = _safe_error_summary(error)
             retry_kind, retry_after_seconds = _retry_policy_for_error(error)
             retry_at = next_retry_at(current, retry_kind, retry_after_seconds)
-            provider_request_count = max(
-                0,
-                int(getattr(self.provider, "api_request_count", 0)),
-            )
-            automatic_ai_requests = retry_state.request_count
-            if automatic:
-                automatic_ai_requests += provider_request_count
-            persisted_error = safe_error
-            if automatic or retry_state.request_count:
-                persisted_error = encode_retry_state(
-                    AutomaticRetryState(
-                        request_count=automatic_ai_requests,
-                        kind=retry_kind,
-                        retry_at=retry_at,
-                        error_summary=safe_error,
-                    )
-                )
+            spent_now = ai_session.request_count
             async with self.bot.database.session_factory() as session:
-                stored = await DailyReportRepository(session).get(guild_id, report_date)
+                repository = DailyReportRepository(session)
+                stored = await repository.get(guild_id, report_date)
                 if stored is not None:
-                    await DailyReportRepository(session).mark_failed(
+                    await repository.mark_failed(
                         stored,
-                        persisted_error,
+                        safe_error,
                         discord_message_ids=partial_ids or published_ids,
                         preview=preview,
                     )
+                    await repository.save_ai_failure(
+                        stored,
+                        request_count=spent_now,
+                        state_json=ai_session.encoded_state(),
+                        retry_kind=retry_kind.value,
+                        retry_at=retry_at,
+                    )
             logger.exception(
-                "Daily report generation failed safely "
-                "(date=%s retry_kind=%s retry_at=%s automatic_ai_requests=%s)",
+                "Daily report generation failed safely (date=%s retry_kind=%s retry_at=%s "
+                "ai_requests=%s/%s stage=%s completed_chunks=%s)",
                 report_date,
                 retry_kind.value,
                 retry_at.isoformat(),
-                automatic_ai_requests,
+                spent_now,
+                budget_limit,
+                ai_session.checkpoint.stage,
+                ai_session.checkpoint.completed_chunk_count,
             )
             return ReportRunResult(
                 "failed",
                 "리포트 생성에 실패했습니다. 로그를 확인하세요.",
                 retry_kind=retry_kind,
                 retry_at=retry_at,
-                automatic_ai_requests=automatic_ai_requests,
+                automatic_ai_requests=spent_now,
             )
+
+
+def _parse_retry_kind(value: str | None) -> AIRetryKind | None:
+    if not value:
+        return None
+    try:
+        return AIRetryKind(value)
+    except ValueError:
+        return None
+
+
+def _load_ai_state(
+    report: Any | None,
+) -> tuple[int, str | None, datetime | None, SummaryCheckpoint]:
+    """Read the persisted budget and checkpoint, falling back to the legacy state.
+
+    Reports written by the previous build encoded their counter inside
+    error_message, so those rows keep their spent-request count across this
+    deploy instead of silently restarting at zero.
+    """
+    if report is None:
+        return 0, None, None, SummaryCheckpoint()
+    spent = max(0, int(getattr(report, "ai_request_count", 0) or 0))
+    retry_kind = getattr(report, "ai_retry_kind", None)
+    retry_at = getattr(report, "ai_retry_at", None)
+    if retry_at is not None:
+        retry_at = ensure_utc(retry_at)
+    checkpoint = decode_checkpoint(getattr(report, "ai_state_json", "") or "")
+    if spent == 0 and retry_kind is None:
+        legacy = decode_retry_state(getattr(report, "error_message", None))
+        if legacy.request_count or legacy.retry_at is not None:
+            spent = legacy.request_count
+            retry_kind = legacy.kind.value if legacy.kind is not None else None
+            retry_at = legacy.retry_at
+    return spent, retry_kind, retry_at, checkpoint
 
 
 def _safe_error_summary(error: BaseException) -> str:
