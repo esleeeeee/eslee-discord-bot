@@ -7,10 +7,13 @@ from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 POSTGRESQL_ASYNCPG_SCHEME = "postgresql+asyncpg://"
+# The OneKey token is the only credential guarding the voice-status endpoint, so
+# it must be long enough that guessing it is not worth attempting.
+ONEKEY_API_TOKEN_MIN_LENGTH = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +96,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # A rejected value must never be echoed back: these fields carry the
+        # Discord token, the Gemini key, the database URL and the API token, and
+        # startup validation errors are written to the deployment log.
+        hide_input_in_errors=True,
     )
 
     discord_token: str = Field(min_length=1)
@@ -113,6 +120,9 @@ class Settings(BaseSettings):
     daily_summary_min_participants: int = Field(default=2, ge=1)
     daily_summary_min_user_messages: int = Field(default=3, ge=1)
     daily_summary_max_users: int = Field(default=20, ge=1, le=100)
+    onekey_discord_user_id: int | None = Field(default=None, gt=0)
+    onekey_api_token: SecretStr | None = None
+    port: int = Field(default=8080, ge=1, le=65535)
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -127,6 +137,48 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("onekey_discord_user_id", mode="before")
+    @classmethod
+    def empty_onekey_user_id_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("onekey_api_token", mode="after")
+    @classmethod
+    def enforce_onekey_api_token_strength(cls, value: SecretStr | None) -> SecretStr | None:
+        """Reject weak or whitespace-padded tokens before the API can ever use one.
+
+        The rejected value is kept out of the error text by hide_input_in_errors
+        on the model config, not by the SecretStr type.
+        """
+        if value is None:
+            return None
+        token = value.get_secret_value()
+        if not token:
+            return None
+        if token != token.strip():
+            raise ValueError("ONEKEY_API_TOKEN must not begin or end with whitespace")
+        if len(token) < ONEKEY_API_TOKEN_MIN_LENGTH:
+            raise ValueError(
+                f"ONEKEY_API_TOKEN must be at least {ONEKEY_API_TOKEN_MIN_LENGTH} characters"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def require_complete_onekey_api_settings(self) -> Settings:
+        user_configured = self.onekey_discord_user_id is not None
+        token_configured = self.onekey_api_token is not None
+        if user_configured != token_configured:
+            raise ValueError(
+                "ONEKEY_DISCORD_USER_ID and ONEKEY_API_TOKEN must be configured together"
+            )
+        return self
+
+    @property
+    def onekey_api_enabled(self) -> bool:
+        return self.onekey_discord_user_id is not None and self.onekey_api_token is not None
 
     def get_daily_summary_config(self) -> DailySummaryConfig:
         errors: list[str] = []

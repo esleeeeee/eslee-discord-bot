@@ -16,4 +16,5 @@ RUN mkdir -p /app/data && chown -R bot:bot /app
 USER bot
 
 VOLUME ["/app/data"]
+EXPOSE 8080
 CMD ["python", "-m", "eslee_bot"]
