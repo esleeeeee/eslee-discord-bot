@@ -299,6 +299,34 @@ async def test_an_unusable_credential_is_rejected_rather_than_crashing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_credential",
+    [b"caf\xe9-token", b"\xff\xfe\x80", API_TOKEN.encode("utf-8") + b"\xff"],
+    ids=["latin1-byte", "raw-bytes", "valid-token-plus-junk"],
+)
+async def test_a_header_that_is_not_valid_utf8_is_rejected_not_crashed(
+    raw_credential: bytes,
+) -> None:
+    """Neither an HTTP client nor make_mocked_request can carry these.
+
+    aiohttp decodes header bytes with surrogateescape, so invalid UTF-8 on the
+    wire reaches the handler as a lone surrogate. A plain .encode("utf-8") on
+    that raises, which aiohttp turns into a 500 with a traceback for any
+    anonymous caller, so the rejection has to survive it. Both test helpers
+    re-encode headers as strict UTF-8 and would raise before reaching the
+    handler, so this drives it with a request stub carrying only the header.
+    """
+    credential = raw_credential.decode("utf-8", "surrogateescape")
+    server = build_server([guild(1, user_id=TARGET_USER_ID)])
+    request = SimpleNamespace(headers={"Authorization": f"Bearer {credential}"})
+
+    response = await server.voice_status(request)  # type: ignore[arg-type]
+
+    assert response.status == 401
+    assert response_json(response) == {"error": "unauthorized"}
+
+
+@pytest.mark.asyncio
 async def test_routed_health_needs_no_authentication() -> None:
     server = build_server()
 

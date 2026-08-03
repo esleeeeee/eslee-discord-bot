@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
 ## Unreleased
 
 - Add an authenticated OneKey HTTP API with `/health` and `/api/voice-status`.
@@ -18,8 +20,6 @@
   against real Discord objects while mocked tests passed.
 - Compare the bearer credential as bytes so a non-ASCII or malformed Authorization
   header returns 401 instead of a 500 with a traceback.
-
-All notable changes to this project will be documented in this file.
 
 ## [0.1.0] - Unreleased
 
