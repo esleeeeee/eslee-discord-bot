@@ -11,7 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-from eslee_bot.onekey_api import OneKeyApiServer, find_voice_status
+from eslee_bot.onekey_api import OneKeyApiServer, cached_voice_state, find_voice_status
 
 TARGET_USER_ID = 123456789012345678
 # At least as long as ONEKEY_API_TOKEN_MIN_LENGTH so tests use a realistic token.
@@ -20,28 +20,60 @@ API_TOKEN = "secure-test-token-value-0123456789abcdef"
 
 @dataclass
 class FakeBot:
-    guilds: list[SimpleNamespace]
+    guilds: list[FakeGuild]
     ready: bool = True
 
     def is_ready(self) -> bool:
         return self.ready
 
 
-def guild(guild_id: int, *, user_id: int | None = None) -> SimpleNamespace:
-    voice_states = {}
-    if user_id is not None:
-        channel = SimpleNamespace(id=987654321, name="General")
-        voice_states[user_id] = SimpleNamespace(channel=channel)
-    return SimpleNamespace(id=guild_id, voice_states=voice_states)
+class FakeGuild:
+    """Mimics the parts of discord.Guild the voice lookup actually uses.
+
+    discord.Guild exposes no public voice-state mapping, so a fake that invents
+    one would let a broken lookup pass. This mirrors the real shape instead:
+    a private _voice_state_for accessor plus an optional member cache.
+    """
+
+    def __init__(
+        self,
+        guild_id: int,
+        *,
+        voice_states: dict[int, object] | None = None,
+        members: dict[int, object] | None = None,
+    ) -> None:
+        self.id = guild_id
+        self._voice_states = dict(voice_states or {})
+        self._members = dict(members or {})
+
+    def get_member(self, user_id: int) -> object | None:
+        return self._members.get(user_id)
+
+    def _voice_state_for(self, user_id: int) -> object | None:
+        return self._voice_states.get(user_id)
 
 
-def disconnected_guild(guild_id: int, user_id: int) -> SimpleNamespace:
+def voice_state(*, connected: bool = True) -> SimpleNamespace:
+    channel = SimpleNamespace(id=987654321, name="General") if connected else None
+    return SimpleNamespace(channel=channel)
+
+
+def guild(guild_id: int, *, user_id: int | None = None, cache_member: bool = False) -> FakeGuild:
+    """A guild whose voice state is only reachable the way discord.py stores it."""
+    if user_id is None:
+        return FakeGuild(guild_id)
+    state = voice_state()
+    members = {user_id: SimpleNamespace(voice=state)} if cache_member else None
+    return FakeGuild(guild_id, voice_states={user_id: state}, members=members)
+
+
+def disconnected_guild(guild_id: int, user_id: int) -> FakeGuild:
     """A guild that remembers the user but with no current channel."""
-    return SimpleNamespace(id=guild_id, voice_states={user_id: SimpleNamespace(channel=None)})
+    return FakeGuild(guild_id, voice_states={user_id: voice_state(connected=False)})
 
 
 def build_server(
-    guilds: list[SimpleNamespace] | None = None,
+    guilds: list[FakeGuild] | None = None,
     *,
     ready: bool = True,
     port: int = 8080,
@@ -88,6 +120,41 @@ def test_a_remembered_but_disconnected_voice_state_is_not_in_voice() -> None:
     status = find_voice_status([disconnected_guild(1, TARGET_USER_ID)], TARGET_USER_ID)
 
     assert status.response_body() == {"in_voice": False}
+
+
+def test_the_lookup_targets_an_api_that_discord_guild_really_has() -> None:
+    """Guards against fakes drifting from discord.py.
+
+    Guild has never had a public voice_states mapping, so reading one would make
+    every production lookup silently return "not in voice" while mocked tests
+    still passed.
+    """
+    import discord
+
+    assert not hasattr(discord.Guild, "voice_states")
+    assert hasattr(discord.Guild, "_voice_state_for")
+    assert hasattr(discord.Guild, "get_member")
+    assert hasattr(discord.Member, "voice")
+
+
+def test_voice_state_is_found_without_the_members_intent() -> None:
+    """The bot does not request the members intent, so get_member returns None."""
+    uncached = guild(1, user_id=TARGET_USER_ID, cache_member=False)
+
+    assert uncached.get_member(TARGET_USER_ID) is None
+    assert cached_voice_state(uncached, TARGET_USER_ID) is not None
+    assert find_voice_status([uncached], TARGET_USER_ID).response_body() == {"in_voice": True}
+
+
+def test_voice_state_is_found_through_the_member_when_it_is_cached() -> None:
+    cached = guild(1, user_id=TARGET_USER_ID, cache_member=True)
+
+    assert cached.get_member(TARGET_USER_ID) is not None
+    assert find_voice_status([cached], TARGET_USER_ID).response_body() == {"in_voice": True}
+
+
+def test_a_guild_exposing_neither_route_is_treated_as_not_in_voice() -> None:
+    assert cached_voice_state(SimpleNamespace(id=1), TARGET_USER_ID) is None
 
 
 def test_voice_status_never_carries_guild_or_channel_identifiers() -> None:
@@ -175,7 +242,7 @@ async def test_voice_status_returns_cached_voice_state_for_valid_token() -> None
     [([], False), ([guild(1, user_id=TARGET_USER_ID)], True)],
 )
 async def test_routed_voice_status_returns_only_the_boolean(
-    guilds: list[SimpleNamespace],
+    guilds: list[FakeGuild],
     expected: bool,
 ) -> None:
     server = build_server(guilds)
@@ -203,6 +270,32 @@ async def test_routed_voice_status_requires_the_bearer_token() -> None:
         assert await response.json() == {"error": "unauthorized"}
         assert response.headers["WWW-Authenticate"] == "Bearer"
         assert response.headers["Vary"] == "Authorization"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "한글토큰입니다",
+        "\U0001f600token",
+        "tokén-with-accents",
+        "Bearer",
+        "",
+    ],
+    ids=["hangul", "emoji", "accented", "no-credential", "empty"],
+)
+async def test_an_unusable_credential_is_rejected_rather_than_crashing(
+    credential: str,
+) -> None:
+    """compare_digest raises on non-ASCII str, which would turn 401 into a 500."""
+    server = build_server([guild(1, user_id=TARGET_USER_ID)])
+    header = f"Bearer {credential}" if credential else "Bearer"
+
+    async with api_client(server) as client:
+        response = await client.get("/api/voice-status", headers={"Authorization": header})
+
+        assert response.status == 401
+        assert await response.json() == {"error": "unauthorized"}
 
 
 @pytest.mark.asyncio
@@ -267,20 +360,29 @@ async def test_start_is_idempotent_and_reuses_one_runner(
 
 
 @pytest.mark.asyncio
-async def test_close_releases_the_runner_and_tolerates_being_called_twice() -> None:
-    server = build_server(port=0)
+async def test_close_releases_the_port_and_tolerates_being_called_twice() -> None:
+    # Bind an ephemeral port first, then demand that exact port back after
+    # closing: port 0 alone would hand out a fresh port and hide a leak.
+    probe = build_server(port=0)
+    await probe.start()
+    port = probe.bound_port
+    assert port is not None
+    await probe.close()
 
+    server = build_server(port=port)
     await server.start()
     assert server.is_running is True
+    assert server.bound_port == port
 
     await server.close()
     assert server.is_running is False
+    assert server.bound_port is None
     await server.close()
     assert server.is_running is False
 
-    # A clean shutdown must leave the server startable again.
+    # The port really was released, so the same one binds again.
     await server.start()
-    assert server.is_running is True
+    assert server.bound_port == port
     await server.close()
 
 

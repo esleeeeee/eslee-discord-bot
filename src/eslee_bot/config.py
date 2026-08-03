@@ -150,8 +150,8 @@ class Settings(BaseSettings):
     def enforce_onekey_api_token_strength(cls, value: SecretStr | None) -> SecretStr | None:
         """Reject weak or whitespace-padded tokens before the API can ever use one.
 
-        Runs in "after" mode so a rejected value is reported as the masked
-        SecretStr rather than the raw token.
+        The rejected value is kept out of the error text by hide_input_in_errors
+        on the model config, not by the SecretStr type.
         """
         if value is None:
             return None

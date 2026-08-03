@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any, Protocol
@@ -11,6 +11,17 @@ from aiohttp import web
 logger = logging.getLogger(__name__)
 
 NO_STORE = "no-store"
+
+
+def _credential_bytes(value: str) -> bytes:
+    """Encode a credential for constant-time comparison, never raising.
+
+    compare_digest refuses str with non-ASCII characters, and a header value that
+    decoded to a lone surrogate would break a plain utf-8 encode, so an
+    unauthenticated request could turn a 401 into a 500 with a traceback in the
+    log. surrogateescape round-trips whatever the parser produced.
+    """
+    return value.encode("utf-8", "surrogateescape")
 
 
 class DiscordStateProvider(Protocol):
@@ -35,14 +46,32 @@ class VoiceStatus:
         return {"in_voice": self.in_voice}
 
 
+def cached_voice_state(guild: Any, target_user_id: int) -> Any:
+    """Read one guild's cached voice state for a user, without any REST call.
+
+    discord.Guild has no public voice-state mapping. It keeps them in the private
+    ``_voice_states`` dict, filled from gateway events whenever the voice-states
+    intent is on, and reads them back through ``_voice_state_for`` — which is
+    exactly what ``Member.voice`` does. Preferring the member is the documented
+    route, but the member cache needs the members intent that this bot does not
+    request, so the accessor is required as well or genuinely-connected users
+    would be reported as absent.
+    """
+    member = guild.get_member(target_user_id) if hasattr(guild, "get_member") else None
+    state = getattr(member, "voice", None)
+    if state is not None:
+        return state
+    accessor = getattr(guild, "_voice_state_for", None)
+    if callable(accessor):
+        return accessor(target_user_id)
+    return None
+
+
 def find_voice_status(guilds: Iterable[Any], target_user_id: int) -> VoiceStatus:
     """Find a cached guild voice state without making Discord REST requests."""
     for guild in guilds:
-        voice_states: Mapping[int, Any] = getattr(guild, "voice_states", {})
-        voice_state = voice_states.get(target_user_id)
-        if getattr(voice_state, "channel", None) is None:
-            continue
-        return VoiceStatus(in_voice=True)
+        if getattr(cached_voice_state(guild, target_user_id), "channel", None) is not None:
+            return VoiceStatus(in_voice=True)
     return VoiceStatus(in_voice=False)
 
 
@@ -58,7 +87,9 @@ class OneKeyApiServer:
     ) -> None:
         self._bot = bot
         self._target_user_id = target_user_id
-        self._api_token = api_token
+        # Compared as bytes: compare_digest rejects str with non-ASCII characters,
+        # so a unicode credential would otherwise raise instead of returning 401.
+        self._api_token = _credential_bytes(api_token)
         self._host = host
         self._port = port
         self._runner: web.AppRunner | None = None
@@ -69,6 +100,12 @@ class OneKeyApiServer:
     @property
     def is_running(self) -> bool:
         return self._runner is not None
+
+    @property
+    def bound_port(self) -> int | None:
+        """The port actually bound, which differs from _port when PORT is 0."""
+        addresses = self._runner.addresses if self._runner is not None else None
+        return int(addresses[0][1]) if addresses else None
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -125,4 +162,4 @@ class OneKeyApiServer:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return False
-        return compare_digest(parts[1], self._api_token)
+        return compare_digest(_credential_bytes(parts[1]), self._api_token)

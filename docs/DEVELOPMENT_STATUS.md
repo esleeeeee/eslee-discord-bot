@@ -12,7 +12,7 @@ main 병합 커밋: `6ebdb37` (충돌 없음)
 - 공개 `GET /health`와 `discord_ready` 상태 분리
 - Bearer 인증 `GET /api/voice-status`
 - timing-safe token 비교, 401/503/200 응답
-- 모든 접근 가능 Guild의 cached Voice State 조회
+- 모든 접근 가능 Guild의 cached Voice State 조회(`Member.voice` → `Guild._voice_state_for`)
 - `VOICE_STATES` intent 활성화
 - `ONEKEY_DISCORD_USER_ID`, secret `ONEKEY_API_TOKEN`, `PORT` 검증
 - `0.0.0.0` bind, Northflank port, aiohttp/Discord 동일 프로세스 생명주기
@@ -36,12 +36,14 @@ main 병합 커밋: `6ebdb37` (충돌 없음)
 ## 자동 테스트
 
 - Ruff: 통과
-- pytest: 262 passed, 기존 discord.py `audioop` deprecation warning 1건
+- pytest: 271 passed, 기존 discord.py `audioop` deprecation warning 1건
 - 인증 성공/실패/누락/형식 오류, ready 전 503, health, true/false, 다중 Guild, 설정 누락·오류, secret repr 비노출을 검증한다.
 - aiohttp test client로 실제 라우팅(200/401/404/405)과 응답 헤더를 검증한다.
 - 중복 start/close, close 후 재시작, bind 실패 시 runner 정리를 검증한다.
 - token 길이·공백 규칙과 거부 오류에 값이 노출되지 않는지 검증한다.
 - `.env.example`을 그대로 복사해도 기동되고 OneKey가 꺼진 상태인지 검증한다.
+- `discord.Guild`에 실제로 존재하는 API만 사용하는지 계약 테스트로 고정한다.
+- members intent 없이도 음성 상태를 찾는지, 비ASCII·손상된 Authorization 헤더가 401인지 검증한다.
 - 기존 SQLite/PostgreSQL schema/URL, 공지·스케줄러·금지어·일일 요약 회귀 테스트도 함께 통과했다.
 
 ## 회사 PC에서 직접 검증
