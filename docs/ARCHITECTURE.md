@@ -24,7 +24,7 @@ EsleeBot.setup_hook
 
 ## 음성 상태 조회
 
-`find_voice_status()`는 각 `Guild.voice_states` mapping에서 환경변수로 검증된 정수 사용자 ID를 찾는다. `VoiceState.channel`이 존재하는 첫 항목을 발견하면 `in_voice`, guild/channel ID와 표시 이름을 반환한다. 없으면 `{ "in_voice": false }`만 반환한다. 네트워크 REST 호출은 수행하지 않는다.
+`find_voice_status()`는 각 `Guild.voice_states` mapping에서 환경변수로 검증된 정수 사용자 ID를 찾는다. `VoiceState.channel`이 존재하는 첫 항목을 발견하면 `{ "in_voice": true }`를, 없으면 `{ "in_voice": false }`를 반환한다. 어느 guild·channel인지는 외부 응답에 포함하지 않는다. 네트워크 REST 호출은 수행하지 않는다.
 
 ## 인증과 설정
 

@@ -13,7 +13,9 @@
 - 둘 중 하나만 설정했거나 사용자 ID/`PORT`가 잘못된 경우 시작 시 명확히 실패한다.
 - 둘 다 없으면 기존 배포와의 호환을 위해 API만 비활성화하고 나머지 봇은 그대로 실행한다.
 - `GET /health`는 인증 없이 `status`와 `discord_ready`만 반환한다.
-- `GET /api/voice-status`는 Bearer token을 요구하고 최소 `in_voice` boolean을 반환한다.
+- `GET /api/voice-status`는 Bearer token을 요구하고 정상 응답으로 `in_voice` boolean 하나만 반환한다.
+- `ONEKEY_API_TOKEN`은 공백 없이 32자 이상이어야 하며, 위반 시 기동 전에 설정 검증에서 거부한다.
+- 두 엔드포인트는 `Cache-Control: no-store`를, 인증 엔드포인트는 추가로 `Vary: Authorization`을 보낸다.
 - 인증 실패는 401, Discord gateway 준비 전은 503, 정상은 200을 사용한다.
 - token은 query parameter로 받지 않고 timing-safe 비교하며 로그에 남기지 않는다.
 

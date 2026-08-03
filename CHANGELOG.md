@@ -5,6 +5,14 @@
 - Add an authenticated OneKey HTTP API with `/health` and `/api/voice-status`.
 - Enable the non-privileged Discord Voice States intent and query cached guild voice states.
 - Add Windows `tzdata` and direct `aiohttp` runtime dependencies plus API regression tests.
+- Require `ONEKEY_API_TOKEN` to be at least 32 characters and reject whitespace-padded
+  tokens at configuration time instead of silently trimming them.
+- Return only `{"in_voice": boolean}` from `/api/voice-status`; the guild, channel, and
+  channel name are no longer disclosed.
+- Send `Cache-Control: no-store` from both endpoints and `Vary: Authorization` from the
+  authenticated one so no cache stores or shares a presence response.
+- Hide rejected input from settings validation errors so a bad token or database URL
+  cannot reach a deployment log.
 
 All notable changes to this project will be documented in this file.
 
