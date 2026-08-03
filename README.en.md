@@ -1,8 +1,6 @@
 # eslee Discord Bot
 
-[➕ **Add eslee-bot to your Discord server**](https://discord.com/oauth2/authorize?client_id=1525689872621240442&scope=bot+applications.commands&permissions=2147576832)
-
-This permanent invite URL points to the official bot application. Servers that install it automatically use the currently deployed bot version; no re-invitation is required after updates.
+This is a privately operated management bot for the author's Discord server. No public bot installation or invite link is provided.
 
 **Language:** English · [한국어](README.md)
 
@@ -42,7 +40,7 @@ Moderation follows the same practical approach: matching is predictable, warning
 
 ## Announcement Reminder System
 
-Announcements are stored in SQLite with `last_sent_at` and `next_send_at`. A single scheduler polls due rows every 60 seconds by default. It does not reset a six-hour timer on every restart. After downtime, each due announcement is sent at most once, and missed time slots are skipped until the next future six-hour boundary.
+Announcements are stored in the configured SQLite or PostgreSQL database with `last_sent_at` and `next_send_at`. A single scheduler polls due rows every 60 seconds by default. It does not reset a six-hour timer on every restart. After downtime, each due announcement is sent at most once, and missed time slots are skipped until the next future six-hour boundary.
 
 Each reminder:
 
@@ -64,9 +62,11 @@ Messages from bots, the bot itself, and webhooks are ignored. Both newly created
 
 ## Optional Daily Conversation Summary
 
-Daily summaries are opt-in and scoped to one configured guild and text channel; announcements, moderation, and server settings remain public multi-server features isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
+Daily summaries are opt-in and scoped to one configured guild and text channel; announcement, moderation, and server-setting data remain isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
 
-After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At 06:01, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. `/하루요약 어제` copies an existing completed Discord report into new messages without another Gemini request and only generates it when the original is unavailable. Raw text is retained for three days by default.
+After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At or after 06:02, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. A missed 06:02 tick or a later restart triggers a catch-up when no completed report exists. A transient database, Gemini, or Discord failure does not terminate the scheduler; incomplete reports are retried, while per-date locking and persisted report state prevent duplicate AI requests and duplicate posts when automatic and manual runs overlap. `/하루요약 어제` copies an existing completed Discord report into new messages without another Gemini request and only generates it when the original is unavailable. Raw text is retained for three days by default.
+
+Gemini traffic is bounded so it stays inside the free-tier limits (5 RPM, 250K TPM, 20 RPD). Before generating, the bot estimates how many requests the plan needs, including chunk summaries and the final consolidation, and refuses to send even the first request when that exceeds the remaining budget. The budget is counted per Pacific quota window and starts again at zero when the window rolls over, so an exhausted window never blocks a report for good. The counter is persisted immediately before each call: automatic runs may spend at most 8 requests per window, manual commands raise the shared ceiling to 12, and automatic, manual, and catch-up runs all draw from the same counter. A separate lifetime total is kept for auditing. Successful chunk summaries and the final consolidation are checkpointed, so a retry or a process restart never pays for them twice. `429` responses are not retried inside one run: RPM/TPM limits use at least a ten-minute cooldown, unknown quota errors wait one hour, and daily quota exhaustion blocks automatic calls for every report date until the next Pacific-midnight reset. `503`, timeout, and network failures get at most two attempts per request, charged to the same budget. SDK retries are explicitly disabled.
 
 The `/하루요약 상태`, `오늘`, `어제`, and `연결확인` command responses are private to the administrator who invoked them. The connection check sends one minimal Gemini request without revealing the API key or changing report state. Only the completed report body is posted publicly. See [the daily-summary operations guide](docs/daily-summary.md) for configuration, privacy, and failure handling.
 
@@ -159,9 +159,9 @@ On PowerShell, copy the file with `Copy-Item .env.example .env`.
 1. Create an application at the Discord Developer Portal.
 2. Open **Bot**, create the bot user, and copy its token into `.env`.
 3. Enable **Message Content Intent** under Privileged Gateway Intents.
-4. Enable **Public Bot** when other users should be able to install it in their servers.
-5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes.
-6. Grant only the permissions listed below and invite the bot.
+4. Leave **Public Bot** disabled for a private deployment.
+5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes to install your own application in the target server.
+6. Grant only the permissions listed below.
 
 Never commit the token. If a token is exposed, reset it immediately in the portal.
 
