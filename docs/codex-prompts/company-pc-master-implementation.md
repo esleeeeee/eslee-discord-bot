@@ -20,7 +20,7 @@ GET /api/voice-status
 Authorization: Bearer <ONEKEY_API_TOKEN>
 ```
 
-health는 `status`와 `discord_ready`를, voice status는 정상 시 최소 `in_voice` boolean을 반환한다. 인증 실패는 401, Discord 준비 전은 503이다. 감지 범위는 봇이 접근하는 Guild이고 DM 통화는 제외한다.
+health는 `status`와 `discord_ready`를, voice status는 정상 시 `in_voice` boolean 하나만 반환한다(guild·channel 정보 비공개). 인증 실패는 401, Discord 준비 전은 503이다. 감지 범위는 봇이 접근하는 Guild이고 DM 통화는 제외한다.
 
 ## 완료 전 확인
 
