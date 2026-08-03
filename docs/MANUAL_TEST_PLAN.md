@@ -31,6 +31,9 @@
 2. 잘못된 scheme/token이 401인지 확인한다.
 3. 음성채널 미참여 상태에서 올바른 Bearer token 요청이 200과 `in_voice: false`인지 확인한다.
 4. 봇이 설치된 서버의 음성채널에 대상 사용자가 입장하면 `in_voice: true`인지 확인한다.
+5. 응답 body에 `in_voice` 외의 key(guild/channel 정보)가 없는지 확인한다.
+6. 응답 헤더에 `Cache-Control: no-store`와 `Vary: Authorization`이 있는지 확인한다.
+7. `ONEKEY_API_TOKEN`을 32자 미만이나 앞뒤 공백 포함으로 두면 기동이 거부되는지 확인한다.
 5. 퇴장 후 false로 돌아오는지 확인한다.
 6. 봇 재시작 중 인증된 요청이 503인지 확인한다.
 7. 응답/배포/application log에 token이나 Authorization header가 없는지 확인한다.

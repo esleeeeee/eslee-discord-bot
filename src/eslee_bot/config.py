@@ -11,6 +11,9 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 POSTGRESQL_ASYNCPG_SCHEME = "postgresql+asyncpg://"
+# The OneKey token is the only credential guarding the voice-status endpoint, so
+# it must be long enough that guessing it is not worth attempting.
+ONEKEY_API_TOKEN_MIN_LENGTH = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +96,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # A rejected value must never be echoed back: these fields carry the
+        # Discord token, the Gemini key, the database URL and the API token, and
+        # startup validation errors are written to the deployment log.
+        hide_input_in_errors=True,
     )
 
     discord_token: str = Field(min_length=1)
@@ -138,15 +145,31 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("onekey_api_token", mode="after")
+    @classmethod
+    def enforce_onekey_api_token_strength(cls, value: SecretStr | None) -> SecretStr | None:
+        """Reject weak or whitespace-padded tokens before the API can ever use one.
+
+        Runs in "after" mode so a rejected value is reported as the masked
+        SecretStr rather than the raw token.
+        """
+        if value is None:
+            return None
+        token = value.get_secret_value()
+        if not token:
+            return None
+        if token != token.strip():
+            raise ValueError("ONEKEY_API_TOKEN must not begin or end with whitespace")
+        if len(token) < ONEKEY_API_TOKEN_MIN_LENGTH:
+            raise ValueError(
+                f"ONEKEY_API_TOKEN must be at least {ONEKEY_API_TOKEN_MIN_LENGTH} characters"
+            )
+        return value
+
     @model_validator(mode="after")
     def require_complete_onekey_api_settings(self) -> Settings:
-        token = (
-            self.onekey_api_token.get_secret_value().strip()
-            if self.onekey_api_token is not None
-            else ""
-        )
         user_configured = self.onekey_discord_user_id is not None
-        token_configured = bool(token)
+        token_configured = self.onekey_api_token is not None
         if user_configured != token_configured:
             raise ValueError(
                 "ONEKEY_DISCORD_USER_ID and ONEKEY_API_TOKEN must be configured together"

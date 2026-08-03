@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any, Protocol
 
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
+
+NO_STORE = "no-store"
 
 
 class DiscordStateProvider(Protocol):
@@ -20,13 +22,17 @@ class DiscordStateProvider(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class VoiceStatus:
-    in_voice: bool
-    guild_id: str | None = None
-    channel_id: str | None = None
-    channel_name: str | None = None
+    """Whether the target user is in a voice channel, and nothing more.
 
-    def response_body(self) -> dict[str, bool | str]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
+    Guild, channel and channel-name are deliberately not carried: the caller only
+    needs the boolean, so the server never has an opportunity to disclose which
+    server or room the user is in.
+    """
+
+    in_voice: bool
+
+    def response_body(self) -> dict[str, bool]:
+        return {"in_voice": self.in_voice}
 
 
 def find_voice_status(guilds: Iterable[Any], target_user_id: int) -> VoiceStatus:
@@ -34,15 +40,9 @@ def find_voice_status(guilds: Iterable[Any], target_user_id: int) -> VoiceStatus
     for guild in guilds:
         voice_states: Mapping[int, Any] = getattr(guild, "voice_states", {})
         voice_state = voice_states.get(target_user_id)
-        channel = getattr(voice_state, "channel", None)
-        if channel is None:
+        if getattr(voice_state, "channel", None) is None:
             continue
-        return VoiceStatus(
-            in_voice=True,
-            guild_id=str(guild.id),
-            channel_id=str(channel.id),
-            channel_name=str(channel.name),
-        )
+        return VoiceStatus(in_voice=True)
     return VoiceStatus(in_voice=False)
 
 
@@ -65,6 +65,10 @@ class OneKeyApiServer:
         self.application = web.Application()
         self.application.router.add_get("/health", self.health)
         self.application.router.add_get("/api/voice-status", self.voice_status)
+
+    @property
+    def is_running(self) -> bool:
+        return self._runner is not None
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -93,20 +97,28 @@ class OneKeyApiServer:
             {
                 "status": "ok",
                 "discord_ready": self._bot.is_ready(),
-            }
+            },
+            headers={"Cache-Control": NO_STORE},
         )
 
     async def voice_status(self, request: web.Request) -> web.Response:
+        # Presence changes constantly and the body depends on the credential, so
+        # no cache anywhere may keep or share a response.
+        headers = {"Cache-Control": NO_STORE, "Vary": "Authorization"}
         if not self._is_authorized(request):
             return web.json_response(
                 {"error": "unauthorized"},
                 status=401,
-                headers={"WWW-Authenticate": "Bearer"},
+                headers={**headers, "WWW-Authenticate": "Bearer"},
             )
         if not self._bot.is_ready():
-            return web.json_response({"error": "discord_not_ready"}, status=503)
+            return web.json_response(
+                {"error": "discord_not_ready"},
+                status=503,
+                headers=headers,
+            )
         status = find_voice_status(self._bot.guilds, self._target_user_id)
-        return web.json_response(status.response_body())
+        return web.json_response(status.response_body(), headers=headers)
 
     def _is_authorized(self, request: web.Request) -> bool:
         authorization = request.headers.get("Authorization", "")
