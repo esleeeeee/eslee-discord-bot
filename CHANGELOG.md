@@ -13,6 +13,11 @@
   authenticated one so no cache stores or shares a presence response.
 - Hide rejected input from settings validation errors so a bad token or database URL
   cannot reach a deployment log.
+- Read the voice state through `Guild._voice_state_for`/`Member.voice`. `Guild` has no
+  public `voice_states` mapping, so the previous lookup reported every user as absent
+  against real Discord objects while mocked tests passed.
+- Compare the bearer credential as bytes so a non-ASCII or malformed Authorization
+  header returns 401 instead of a 500 with a traceback.
 
 All notable changes to this project will be documented in this file.
 
