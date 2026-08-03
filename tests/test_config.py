@@ -1,6 +1,15 @@
-import pytest
+from pathlib import Path
 
-from eslee_bot.config import Settings, normalize_database_url
+import pytest
+from pydantic import ValidationError
+
+from eslee_bot.config import (
+    ONEKEY_API_TOKEN_MIN_LENGTH,
+    Settings,
+    normalize_database_url,
+)
+
+VALID_ONEKEY_TOKEN = "secure-test-token-value-0123456789abcdef"
 
 
 @pytest.mark.parametrize(
@@ -59,6 +68,152 @@ def test_settings_do_not_require_a_guild_id(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("DISCORD_DEV_GUILD_ID", raising=False)
     settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
     assert settings.discord_dev_guild_id is None
+
+
+def test_onekey_api_is_disabled_when_both_settings_are_absent() -> None:
+    settings = Settings(discord_token="test-token", _env_file=None)  # type: ignore[call-arg]
+
+    assert settings.onekey_api_enabled is False
+
+
+def test_onekey_api_settings_are_parsed_without_exposing_token() -> None:
+    token = VALID_ONEKEY_TOKEN
+    settings = Settings(
+        discord_token="test-token",
+        onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+        onekey_api_token=token,
+        _env_file=None,  # type: ignore[call-arg]
+    )
+
+    assert settings.onekey_api_enabled is True
+    assert settings.onekey_discord_user_id == 123456789012345678
+    assert settings.onekey_api_token is not None
+    assert settings.onekey_api_token.get_secret_value() == token
+    assert token not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"onekey_discord_user_id": "123456789012345678"},
+        {"onekey_api_token": VALID_ONEKEY_TOKEN},
+        {
+            "onekey_discord_user_id": "not-a-discord-id",
+            "onekey_api_token": VALID_ONEKEY_TOKEN,
+        },
+    ],
+)
+def test_incomplete_or_invalid_onekey_api_settings_fail_validation(
+    values: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(discord_token="test-token", _env_file=None, **values)  # type: ignore[arg-type]
+
+
+def test_a_token_of_exactly_the_minimum_length_is_accepted() -> None:
+    token = "a" * ONEKEY_API_TOKEN_MIN_LENGTH
+
+    settings = Settings(
+        discord_token="test-token",
+        onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+        onekey_api_token=token,
+        _env_file=None,  # type: ignore[call-arg]
+    )
+
+    assert settings.onekey_api_token is not None
+    assert settings.onekey_api_token.get_secret_value() == token
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "a" * (ONEKEY_API_TOKEN_MIN_LENGTH - 1),
+        "short",
+        "x",
+    ],
+)
+def test_a_token_shorter_than_the_minimum_is_rejected(token: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        Settings(
+            discord_token="test-token",
+            onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+            onekey_api_token=token,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+
+    assert f"at least {ONEKEY_API_TOKEN_MIN_LENGTH} characters" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        f" {VALID_ONEKEY_TOKEN}",
+        f"{VALID_ONEKEY_TOKEN} ",
+        f"  {VALID_ONEKEY_TOKEN}  ",
+        f"\t{VALID_ONEKEY_TOKEN}",
+        f"{VALID_ONEKEY_TOKEN}\n",
+    ],
+)
+def test_a_token_padded_with_whitespace_is_rejected_instead_of_trimmed(token: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        Settings(
+            discord_token="test-token",
+            onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+            onekey_api_token=token,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+
+    assert "whitespace" in str(caught.value)
+
+
+@pytest.mark.parametrize("token", ["short", f" {VALID_ONEKEY_TOKEN} "])
+def test_a_rejected_token_is_never_echoed_back_in_the_error(token: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        Settings(
+            discord_token="super-secret-discord-token",
+            onekey_discord_user_id="123456789012345678",  # type: ignore[arg-type]
+            onekey_api_token=token,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+
+    message = str(caught.value)
+    assert token.strip() not in message
+    assert "super-secret-discord-token" not in message
+
+
+def test_the_committed_env_example_starts_the_bot_as_written(tmp_path: Path) -> None:
+    """Copying .env.example is the documented first step, so it must validate.
+
+    It must also leave the OneKey API off: a placeholder token that passed
+    validation could otherwise be deployed as a real, publicly known credential.
+    """
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        example.read_text(encoding="utf-8").replace(
+            "DISCORD_TOKEN=replace-with-your-bot-token",
+            "DISCORD_TOKEN=placeholder-token-for-this-test",
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=str(env_file))  # type: ignore[call-arg]
+
+    assert settings.onekey_api_enabled is False
+    assert settings.onekey_api_token is None
+    assert settings.onekey_discord_user_id is None
+    assert settings.port == 8080
+
+
+def test_a_blank_token_means_the_api_is_simply_not_configured() -> None:
+    settings = Settings(
+        discord_token="test-token",
+        onekey_api_token="",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+
+    assert settings.onekey_api_token is None
+    assert settings.onekey_api_enabled is False
 
 
 @pytest.mark.parametrize("variable", ["DISCORD_GUILD_ID", "GUILD_ID", "TEST_GUILD_ID"])
