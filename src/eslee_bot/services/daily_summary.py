@@ -50,6 +50,9 @@ class GeneratedSummary:
     user_summaries: tuple[UserSummary, ...]
     api_request_count: int
     used_chunk_fallback: bool
+    chunk_count: int = 1
+    # Chunk or final results served from the checkpoint instead of Gemini.
+    reused_request_count: int = 0
 
 
 def day_bounds_utc(report_date: date, timezone: ZoneInfo) -> tuple[datetime, datetime]:

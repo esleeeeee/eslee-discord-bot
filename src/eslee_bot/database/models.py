@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -131,6 +132,18 @@ class DailyReport(Base):
     discord_message_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Gemini requests spent inside the current Pacific quota window, shared by the
+    # scheduler, manual commands and post-quota catch-up runs. Resets when the
+    # window rolls over so an exhausted window never blocks the report forever.
+    ai_request_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    # Lifetime total for auditing; never reset by a window rollover.
+    ai_request_total: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    # Pacific date that ai_request_count belongs to.
+    ai_quota_window: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ai_retry_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ai_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Chunk summaries that already succeeded, so a retry never repeats them.
+    ai_state_json: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

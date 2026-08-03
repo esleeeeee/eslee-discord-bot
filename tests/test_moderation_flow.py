@@ -157,17 +157,28 @@ async def test_every_warning_uses_the_five_second_channel_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bot_messages_are_ignored() -> None:
+async def test_automatic_report_with_a_forbidden_word_is_ignored() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.initialize()
     try:
-        message = make_message(bot_author=True)
+        async with database.session_factory() as session:
+            await ForbiddenWordRepository(session).add(
+                1, "주식", normalize_forbidden_word("주식"), 99
+            )
+        message = make_message(
+            bot_author=True,
+            content="오늘은 주식 이야기가 가장 많이 언급됐습니다.",
+        )
         cog = ModerationCog(FakeBot(database))  # type: ignore[arg-type]
 
         await cog._moderate_message(message)
 
         message.delete.assert_not_awaited()
         message.author.send.assert_not_awaited()
+        message.channel.send.assert_not_awaited()
+        async with database.session_factory() as session:
+            records = list(await session.scalars(select(ModerationViolation)))
+        assert records == []
     finally:
         await database.close()
 
