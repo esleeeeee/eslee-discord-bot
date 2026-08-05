@@ -1,285 +1,503 @@
 # eslee Discord Bot
 
-This is a privately operated management bot for the author's Discord server. No public bot installation or invite link is provided.
+A server management bot that automates repeated announcement reminders,
+forbidden-word moderation, and daily conversation summaries for Discord
+servers.
 
 **Language:** English · [한국어](README.md)
 
-`eslee Discord Bot` is a small-server Discord assistant that keeps important notices visible, removes forbidden words in real time, and can publish a Gemini-powered daily conversation report for one configured channel. Discord pins are easy to miss—especially on mobile—so registered source messages are resurfaced every six hours without destroying Poll results or repeatedly uploading the same images and files.
+> This bot is privately operated and provides no public invite link. To use
+> it, follow [Deploying your own instance](#deploying-your-own-instance) to run
+> it under your own Discord bot application, then invite that bot to your own
+> server. The GitHub source ZIP is not a ready-to-run installer.
 
-The bot also provides persistent, server-specific moderation with short-lived channel warnings and optional administrator audit logs.
+## What this bot can do for you
 
-## Overview
+- Re-announce important messages **every 6 hours** so they never get buried
+- Turn an existing message into an announcement **with one right click**
+- Register dozens of forbidden words **in one command**, and catch spaced-out
+  or decomposed evasions like `주.식`, `주 식`, and `ㅈㅜㅅㅣㄱ`
+- Catch users who **edit a clean message afterwards** to sneak a banned word in
+- Receive an **automatic morning report** summarizing yesterday's conversation
+- Keep schedules and summary work **from restarting at zero** when the bot
+  process restarts
 
-- Python 3.12 and `discord.py` 2.7.1
-- Async SQLAlchemy 2.x with SQLite/`aiosqlite` and PostgreSQL/`asyncpg`
-- Database-driven scheduling that survives process restarts
-- Korean user-facing commands and responses
-- Minimal Discord intents and permissions
+## Getting started
 
-## Why This Project
+The full path from deployment to your first announcement:
 
-Discord's pin list requires members to look for it manually. This bot periodically exposes important messages in the channel while keeping one canonical source. A Poll reminder links back to the original Poll, preserving every vote. Attachment reminders reference existing Discord-hosted files instead of re-uploading them.
+1. Follow [Deploying your own instance](#deploying-your-own-instance) to run
+   the bot locally, in Docker, or on Northflank.
+2. Invite the bot to your server using the invite link you create in the
+   Discord Developer Portal.
+3. Check that the bot shows as **online** in the member list.
+4. Type `/` in the chat box and confirm the `/공지` and `/금지어` commands
+   appear. Right after inviting, commands can take a few minutes to show up.
+5. As an administrator, try your first feature:
+   - Right-click any message (long-press on mobile) → **Apps → 공지로 등록**
+     ("register as announcement")
+   - Or register a test word with `/금지어 추가` and then post that word
+6. Point admin logs at a channel with `/설정 로그채널`, and you are set.
 
-Moderation follows the same practical approach: matching is predictable, warnings disappear from the channel after about five seconds, and stored violation records exclude the original message body.
+The daily summary is an opt-in feature that does not turn on by inviting the
+bot. It works only when the operator deploying the bot designates a target
+server and channel through environment variables. See
+[Daily conversation summary](#daily-conversation-summary).
 
-## Features
+Note: all commands and bot responses are in Korean.
 
-- Multiple concurrent announcements per server
-- Immediate first reminder, then a fixed six-hour cadence
-- Previous reminder cleanup before the next reminder
-- Short text, long text, image, file, mixed, and Poll-aware embeds
-- Source edits reflected in later reminders
-- Source deletion automatically disables the announcement
-- Case-insensitive, Unicode-normalized substring moderation
-- Bounded detection of punctuation, digit, whitespace, zero-width, `ㅋ/ㅎ`, and Hangul Jamo evasions
-- New-message and uncached raw message-edit inspection
-- Multiple matches handled as one deletion, one warning, and one violation
-- Other bots and webhooks ignored by default
-- Optional daily summary collection, Seoul 06:00 startup backfill, and Gemini reports
-- Server owner or Discord Administrator management policy
+## Announcement reminders
 
-## Announcement Reminder System
+Keeps an important message in its original place and re-announces it to the
+channel every 6 hours.
 
-Announcements are stored in the configured SQLite or PostgreSQL database with `last_sent_at` and `next_send_at`. A single scheduler polls due rows every 60 seconds by default. It does not reset a six-hour timer on every restart. After downtime, each due announcement is sent at most once, and missed time slots are skipped until the next future six-hour boundary.
+### Registering an announcement
 
-Each reminder:
+- Existing message: right-click the message and choose **Apps → 공지로 등록**.
+- New announcement: use `/공지 등록` and type the text into the `content`
+  option; the optional `channel` option chooses where the source message is
+  posted (default: the channel you ran the command in).
 
-1. Fetches the current source message.
-2. Attempts to delete the prior reminder; an already-deleted reminder is harmless.
-3. Builds a content-aware embed with a source jump link.
-4. Sends the new reminder.
-5. Atomically updates the snapshot, reminder ID, sent time, and next due time.
+The first reminder is sent immediately after registration, then every 6 hours.
 
-Images and files are referenced, never re-uploaded. Polls are never copied or deleted; their reminders display the real question, known finalized state, and remaining time such as `25시간 30분`, then link to the original Poll. Participation counts are intentionally omitted because a summed vote count is not a reliable unique-participant count for multi-select Polls.
+### How reminders behave
 
-## Forbidden Word Moderation
+- Each new reminder **deletes only the previous reminder**. The original
+  announcement message is never deleted or pinned.
+- Every reminder carries a jump link to the original. Short texts are
+  readable inside the reminder; long texts are shortened to a preview.
+- Images and files are never re-uploaded; the reminder points to the original
+  attachments, so the same file does not pile up in the channel.
+- Edits to the original message are reflected in later reminders.
+- If the original message is deleted, the announcement is automatically
+  disabled, with a note in the log channel when one is configured.
+- Reminders missed while the bot was offline are not sent in a burst — each
+  announcement is re-announced once, then returns to its normal cycle.
 
-Matching keeps the existing Unicode NFKC plus `casefold()` substring rule, then performs a bounded evasion check. For a registered word such as `주식`, forms like `주.식`, `주123식`, `주 식`, `주ㅋㅋ식`, zero-width insertion, and separated Jamo are detected without globally deleting separators or using an unrestricted wildcard. Only approved filler categories are allowed, with at most eight characters between meaningful characters, so ordinary Korean text with unrelated words in between is not joined into a match.
-
-When one or more words match, the bot attempts message deletion, mentions the user in a channel warning deleted after about five seconds, posts an optional audit embed, and records only IDs plus the originally registered matched words in the database. It does not send moderation DMs.
-
-Messages from bots, the bot itself, and webhooks are ignored. Both newly created messages and message edits are inspected. Attachment-only messages have no text and are ignored.
-
-## Optional Daily Conversation Summary
-
-Daily summaries are opt-in and scoped to one configured guild and text channel; announcement, moderation, and server-setting data remain isolated by `guild_id`. Only human-authored text is collected. Bot, webhook, system, and empty messages are excluded.
-
-After startup, a background backfill reads Discord history from the most recent 06:00 in `Asia/Seoul` through the current time. Unique message IDs make the operation idempotent, and permission or API failures do not stop the rest of the bot. At or after 06:02, messages from the previous day at 06:00 through the current day at 06:00 are aggregated and, when minimum activity thresholds are met, Gemini creates an overall summary and per-user summaries for a public report channel. A missed 06:02 tick or a later restart triggers a catch-up when no completed report exists. A transient database, Gemini, or Discord failure does not terminate the scheduler; incomplete reports are retried, while per-date locking and persisted report state prevent duplicate AI requests and duplicate posts when automatic and manual runs overlap. `/하루요약 어제` copies an existing completed Discord report into new messages without another Gemini request and only generates it when the original is unavailable. Raw text is retained for three days by default.
-
-Gemini traffic is bounded so it stays inside the free-tier limits (5 RPM, 250K TPM, 20 RPD). Before generating, the bot estimates how many requests the plan needs, including chunk summaries and the final consolidation, and refuses to send even the first request when that exceeds the remaining budget. The budget is counted per Pacific quota window and starts again at zero when the window rolls over, so an exhausted window never blocks a report for good. The counter is persisted immediately before each call: automatic runs may spend at most 8 requests per window, manual commands raise the shared ceiling to 12, and automatic, manual, and catch-up runs all draw from the same counter. A separate lifetime total is kept for auditing. Successful chunk summaries and the final consolidation are checkpointed, so a retry or a process restart never pays for them twice. `429` responses are not retried inside one run: RPM/TPM limits use at least a ten-minute cooldown, unknown quota errors wait one hour, and daily quota exhaustion blocks automatic calls for every report date until the next Pacific-midnight reset. `503`, timeout, and network failures get at most two attempts per request, charged to the same budget. SDK retries are explicitly disabled.
-
-The `/하루요약 상태`, `오늘`, `어제`, and `연결확인` command responses are private to the administrator who invoked them. The connection check sends one minimal Gemini request without revealing the API key or changing report state. Only the completed report body is posted publicly. See [the daily-summary operations guide](docs/daily-summary.md) for configuration, privacy, and failure handling.
-
-## Demo
-
-Demo media can be added later under `docs/assets/` as `announcement-demo.gif` and `moderation-demo.gif`. They are not embedded yet, so the README does not show broken images.
-
-## Architecture
-
-```text
-Discord interactions/events
-        │
-        ├── cogs/              command and event adapters
-        ├── services/          testable content and matching rules
-        ├── tasks/             persistent announcement scheduler
-        └── database/          async models and repositories
-                 │
-          SQLite / PostgreSQL
+```mermaid
+flowchart TD
+    A[Register announcement] --> B[First reminder sent immediately]
+    B --> C[Wait 6 hours]
+    C --> D[Delete previous reminder, send a new one]
+    D --> C
 ```
 
-Discord-specific network work stays in Cogs and the scheduler. Text normalization, matching, classification, truncation, permissions, links, and schedule math are independently testable.
+### Poll announcements
 
-## Commands
+Registering a message that contains a Discord Poll does not create a new
+poll — cloning would split existing votes. Instead the reminder shows the
+original poll's question, status, and remaining time, and directs members to
+the original. After the end time it shows `종료됨` (ended), and participant
+counts that cannot be computed reliably are never guessed.
 
-| Command | Access | Purpose |
+### Managing announcements
+
+| Goal | Command |
+| --- | --- |
+| See active announcements | `/공지 목록` |
+| Re-announce right now | `/공지 즉시전송` (pick via autocomplete) |
+| Delete an announcement | `/공지 삭제` (pick via autocomplete) |
+
+## Forbidden-word moderation
+
+Register words that must not be used on your server; new and edited messages
+are checked in real time.
+
+### Managing the word list
+
+- `/금지어 추가` — add one word.
+- `/금지어 일괄추가` — add up to 500 words at once, separated by commas or
+  line breaks, e.g. `사과, 바나나, TEST`.
+- `/금지어 삭제` — delete via the autocomplete list.
+- `/금지어 목록` — view the current server's words. **The only management
+  command open to every member**, so anyone can check the server rules.
+
+Matching ignores letter case, and duplicate entries are merged
+automatically.
+
+### How detection works
+
+The base rule is substring matching: registering `사과` also catches
+`청사과` and `사과나무`.
+
+Common evasions are caught as well. With `주식` registered, forms like
+`주.식`, `주123식`, `주 식`, `주ㅋㅋ식`, invisible-character insertion, and
+decomposed jamo such as `ㅈㅜㅅㅣㄱ` are detected. The filler allowed between
+letters is limited to spaces, symbols, digits, and short `ㅋ/ㅎ` runs, with a
+bounded length — so a normal sentence like `주말에 맛있는 식당에 갔다`, where
+real words sit between the letters, is not stitched together into a false
+match.
+
+Messages from bots and webhooks are not inspected, so the bot never re-detects
+its own warnings.
+
+### What happens on a violation
+
+1. The violating message is deleted.
+2. A warning mentioning the author appears in the same channel and
+   auto-deletes after about 5 seconds. No DM is sent.
+3. If a log channel is set via `/설정 로그채널`, an admin record is posted
+   there with the user, channel, detected words, whether deletion succeeded,
+   and a preview of the original text.
+
+Multiple banned words in one message still produce a single deletion and a
+single warning, with every detected word recorded. Detection and deletion keep
+working even when no log channel is configured or reachable.
+
+## Daily conversation summary
+
+An **opt-in feature** that collects one channel's conversation and publishes a
+Gemini-generated summary report the next morning.
+
+### Before you rely on it
+
+- It is not automatically available on every server. It works only for the
+  **one server and one channel** the bot operator designates via environment
+  variables.
+- It requires a Google Gemini API key, and the target channel's text is sent
+  to Google Gemini to generate the summary.
+
+### How it works
+
+- Only **human-authored text** in the designated channel is collected. Bot,
+  webhook, and system messages, empty messages, and attachment-only messages
+  are excluded.
+- Edits are reflected; deleted messages are removed from the summary source.
+- Every day at 06:02 (default), messages from 06:00 the previous day to 06:00
+  today are aggregated. A report is generated only when there are at least
+  10 messages from 2 participants (defaults).
+- The report contains an overall summary plus one-line summaries for up to 20
+  members (default) who wrote 3 or more messages. Message counts, participant
+  counts, and the busiest hour are computed by the bot itself, not the AI.
+- Only the finished report is posted publicly, to the designated report
+  channel.
+- After a restart the bot re-reads missed history in the background, and a
+  missed morning run is caught up automatically as long as no completed
+  report exists.
+- Collected raw text is deleted after 3 days by default; generated reports
+  and statistics are kept.
+
+```mermaid
+flowchart TD
+    A[Collect designated channel] --> B[Aggregate at 06:02]
+    B --> C{Enough messages and participants?}
+    C -->|No| D[Skip report]
+    C -->|Yes| E[Generate summary with Gemini]
+    E --> F[Post to report channel]
+```
+
+### Administrator commands
+
+These commands work only for the owner/administrators of the designated
+server, and responses are visible only to the person who ran them.
+
+| Command | What it does |
+| --- | --- |
+| `/하루요약 상태` | Show configuration, today's collection, latest report status, and usage diagnostics |
+| `/하루요약 오늘` | Generate a preview of today so far (refresh with the `재생성` option) |
+| `/하루요약 어제` | Repost yesterday's report; an existing completed report is copied without another AI call |
+| `/하루요약 연결확인` | Privately check Gemini authentication and model access without exposing the key |
+
+### Built to stay inside the free tier
+
+A short day is usually summarized with **a single Gemini request**. Very long
+days are summarized in parts and then combined, still under a per-report
+request cap (8 requests for automatic runs, 12 including manual commands). On failure
+or quota exhaustion the bot does not hammer the API every minute — it retries
+only after defined cooldowns, and once the quota resets it automatically
+finishes any incomplete report. Successful partial results are saved and
+reused, so the same work never spends quota twice. On a quota-exhausted day
+the report may arrive later in the afternoon, but it is not lost.
+
+Operator-facing environment variables and the detailed policy live in the
+[daily summary operations guide](docs/daily-summary.md) (Korean).
+
+## Commands at a glance
+
+| When you want to… | Command | Who can use it |
 | --- | --- | --- |
-| Apps → `공지로 등록` | Owner/Admin | Register an existing message |
-| `/공지 등록` | Owner/Admin | Create and register a source message |
-| `/공지 목록` | Owner/Admin | List active notices with previews and links |
-| `/공지 삭제` | Owner/Admin | Delete a notice using autocomplete |
-| `/공지 즉시전송` | Owner/Admin | Send a reminder now |
-| `/금지어 추가` | Owner/Admin | Add a forbidden word |
-| `/금지어 일괄추가` | Owner/Admin | Add up to 500 comma/newline-separated words |
-| `/금지어 삭제` | Owner/Admin | Remove a word using autocomplete |
-| `/금지어 목록` | Everyone | List registered words |
-| `/설정 로그채널` | Owner/Admin | Select an existing audit-log channel |
-| `/하루요약 상태` | Configured guild Owner/Admin | Inspect summary configuration and status |
-| `/하루요약 오늘` | Configured guild Owner/Admin | Generate today's private preview |
-| `/하루요약 어제` | Configured guild Owner/Admin | Repost the completed report without another AI request |
-| `/하루요약 연결확인` | Configured guild Owner/Admin | Privately verify Gemini model access |
+| Turn an existing message into a repeated announcement | Right-click → **Apps → 공지로 등록** | Owner/Admin |
+| Write a new announcement | `/공지 등록` | Owner/Admin |
+| List, delete, or re-send announcements | `/공지 목록` · `삭제` · `즉시전송` | Owner/Admin |
+| Add one forbidden word | `/금지어 추가` | Owner/Admin |
+| Add many forbidden words | `/금지어 일괄추가` | Owner/Admin |
+| Delete a forbidden word | `/금지어 삭제` | Owner/Admin |
+| View the server's forbidden words | `/금지어 목록` | **Every member** |
+| Set the admin log channel | `/설정 로그채널` | Owner/Admin |
+| Summary status, preview, repost | `/하루요약 상태` · `오늘` · `어제` · `연결확인` | Owner/Admin of the designated server + operator setup |
 
-Management responses are ephemeral. Ordinary message moderation cannot use ephemeral responses, so it uses a temporary channel warning for every user.
+"Owner/Admin" means the server owner or a member with Discord's Administrator
+permission. Management responses are visible only to the invoker, and members
+without permission only receive a denial notice. The bot account itself does
+not need Administrator.
 
-## Project Structure
+## Good to know
 
-```text
-src/eslee_bot/
-├── bot.py                 # lifecycle, intents, and command sync
-├── config.py              # validated environment settings
-├── cogs/                  # announcement, moderation, settings, summary adapters
-├── database/              # SQLAlchemy models, session, repositories
-├── services/              # business and presentation rules
-├── tasks/                 # announcement and daily-summary schedulers
-└── utils/                 # permissions, text, time, message links
-tests/                     # pure logic and async persistence tests
-.github/workflows/ci.yml   # Ruff and pytest
-```
+- The bot needs View Channels, Send Messages, Manage Messages, Read Message
+  History, and Embed Links. Channel-level permission overrides can break
+  deletion or reminders in that channel.
+- Forbidden-word detection requires the **Message Content Intent** to be
+  enabled in the Discord Developer Portal.
+- Commands and responses are in Korean.
+- The daily summary works only for the operator-designated server and channel,
+  and needs a Gemini API key and outbound API access. Reports can be delayed
+  on days the free quota is exhausted.
+- Poll reminders link to the original poll and never clone it, so votes always
+  accumulate in one place.
+- Running the same bot token in two places duplicates reminders. Keep exactly
+  one instance running.
+- Discord or Google API outages can temporarily delay reminders and reports.
 
-## Tech Stack
+## Data and privacy
 
-- Python 3.12+
-- discord.py 2.7.1
-- SQLAlchemy 2.0.51 async ORM
-- SQLite and aiosqlite
-- PostgreSQL and asyncpg
-- Google Gen AI SDK
-- pydantic-settings and `.env`
-- pytest, pytest-asyncio, and Ruff
-- Docker and GitHub Actions
+What the bot stores:
 
-## Installation
+- Per-server settings (log channel), announcement schedules and content
+  snapshots, forbidden-word lists
+- Violation records: server, user, and channel IDs, detected words, and the
+  time — **the original message body is not stored**
+- Message text from the daily-summary channel: **kept 3 days by default, then
+  deleted**; generated reports and statistics are kept
+
+What appears in channels:
+
+- On a violation, the admin log channel shows a preview of the original
+  message. Use a channel restricted to administrators.
+
+What leaves your server:
+
+- Only when the daily summary is enabled, the designated channel's message
+  text, author display names, and timestamps are sent to the Google Gemini
+  API to generate the summary. Attachments are never collected, so none are
+  sent.
+- No ads, analytics, or any other outbound transfer.
+
+Data lives in the operator-configured database (a local SQLite file or
+PostgreSQL). Application logs do not record tokens or message bodies. When
+sharing logs for a bug report, mask server, channel, and user IDs.
+
+## Troubleshooting
+
+### Slash commands do not appear
+
+→ Confirm the invite included both the `bot` and `applications.commands`
+scopes.
+→ Right after inviting, commands can take minutes up to about an hour to
+propagate. Restart the Discord app.
+→ If they still do not appear, kick the bot and re-invite with both scopes.
+
+### Announcement reminders stop arriving
+
+→ Check `/공지 목록` to see the announcement is still active. Deleting the
+original message disables it automatically.
+→ Check the bot can view and send messages in that channel.
+→ Check the bot is online. After downtime, missed reminders are re-sent once,
+not in a burst.
+→ If it keeps failing, check the runtime logs for send errors.
+
+### A forbidden word is not detected
+
+→ Check `/금지어 목록` on **this server** — word lists are per server.
+→ Confirm the Message Content Intent is enabled in the Developer Portal.
+→ Messages from bots and webhooks are intentionally not inspected.
+→ Evasion detection is bounded by design. If you need a specific variant
+caught, register that variant as its own word.
+
+### The daily report is not posted
+
+→ Start with `/하루요약 상태` — it shows whether the feature is enabled,
+today's collection count, the latest report status, and usage diagnostics.
+→ If yesterday's conversation was below the minimum (default: 10 messages,
+2 participants), skipping the report is normal.
+→ Use `/하루요약 연결확인` to check the Gemini key and model access.
+→ On quota-exhausted days the report is posted automatically after the quota
+resets; the status command shows when the wait ends.
+→ If it keeps failing, check the runtime logs in your deployment (Northflank
+etc.).
+
+### Database connection fails
+
+→ Check `DATABASE_URL`. `postgresql://` and `postgres://` URLs are converted
+to the async driver automatically, and `sslmode=require` is handled for you.
+→ On Northflank, confirm the PostgreSQL addon's `POSTGRES_URI` is aliased to
+the service as exactly `DATABASE_URL`.
+
+### The bot is offline
+
+→ Confirm the runtime (Northflank deployment, local process, Docker
+container) is actually running.
+→ Check the startup logs for token or configuration validation errors —
+invalid required values make the bot exit with a readable reason.
+→ Confirm the latest code is deployed and the instance count is 1.
+
+## How it works
+
+- Announcement schedules are stored in the database, so a restart never
+  resets the 6-hour cycle; the stored next-send time is honored.
+- Forbidden-word checks run on new-message and message-edit events.
+- The daily summary stores the designated channel's text temporarily,
+  aggregates it at the scheduled time, and saves completed partial AI work so
+  a mid-run failure resumes instead of restarting. Completed reports are
+  never regenerated.
+- Per-server data (announcements, words, settings, violations) is isolated
+  per server.
+
+## Deploying your own instance
+
+Everything from here on is for operators and developers. Python 3.12+ is
+required.
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/esleeeeee/eslee-discord-bot.git
 cd eslee-discord-bot
 python -m venv .venv
-```
-
-Activate the virtual environment, then install:
-
-```bash
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-On PowerShell, copy the file with `Copy-Item .env.example .env`.
+On Windows PowerShell, use `.venv\Scripts\Activate.ps1` and
+`Copy-Item .env.example .env`.
 
-## Discord Developer Portal Setup
+### 2. Discord Developer Portal
 
-1. Create an application at the Discord Developer Portal.
-2. Open **Bot**, create the bot user, and copy its token into `.env`.
-3. Enable **Message Content Intent** under Privileged Gateway Intents.
-4. Leave **Public Bot** disabled for a private deployment.
-5. Use OAuth2 URL Generator with the `bot` and `applications.commands` scopes to install your own application in the target server.
-6. Grant only the permissions listed below.
+1. Create an application at the
+   [Discord Developer Portal](https://discord.com/developers/applications) and
+   create the bot user under **Bot** to get the token.
+2. Enable **Message Content Intent** under Privileged Gateway Intents.
+   Presence and Server Members are not needed.
+3. Keep **Public Bot** off for a private deployment.
+4. In **OAuth2 → URL Generator**, select the `bot` and
+   `applications.commands` scopes and only these permissions:
+   - View Channels, Send Messages, Manage Messages,
+     Read Message History, Embed Links
+5. Invite the bot with that URL. Do not grant Administrator.
 
-Never commit the token. If a token is exposed, reset it immediately in the portal.
+### 3. Environment variables
 
-The Voice States intent used by the OneKey API is not privileged and needs no separate Portal toggle or approval.
+Set these in `.env`. Never commit real tokens or keys — this repository
+gitignores `.env`, the SQLite DB, and log files.
 
-## Required Intents
+```env
+DISCORD_TOKEN=your_discord_bot_token
+DATABASE_URL=sqlite+aiosqlite:///./data/eslee_bot.db
+```
 
-- Guilds
-- Guild Messages
-- Message Content (privileged; must be enabled in the Developer Portal)
-- Voice States (non-privileged; enabled in code)
+| Variable | Required | Default | Purpose | Sensitive |
+| --- | --- | --- | --- | --- |
+| `DISCORD_TOKEN` | Yes | — | Bot token | Yes |
+| `DATABASE_URL` | No | local SQLite file | SQLite or PostgreSQL connection URL | Yes for PostgreSQL |
+| `LOG_LEVEL` | No | `INFO` | Log level | No |
+| `SCHEDULER_POLL_SECONDS` | No | `60` | Schedule poll interval (10–300s) | No |
+| `DISCORD_DEV_GUILD_ID` | No | empty | Local development only: instant command sync to one test server | No |
+| `DAILY_SUMMARY_ENABLED` | No | `false` | Turn the daily summary on | No |
+| `DAILY_SUMMARY_GUILD_ID` | When summary on | empty | Target server ID | No |
+| `DAILY_SUMMARY_SOURCE_CHANNEL_ID` | When summary on | empty | Channel to collect | No |
+| `DAILY_SUMMARY_REPORT_CHANNEL_ID` | When summary on | empty | Channel for reports | No |
+| `GEMINI_API_KEY` | When summary on | empty | Google Gemini API key | Yes |
+| `DAILY_SUMMARY_AI_MODEL` | No | `gemini-3.5-flash` | Gemini model | No |
+| `DAILY_SUMMARY_TIMEZONE` | No | `Asia/Seoul` | Day-boundary timezone | No |
+| `DAILY_SUMMARY_RUN_TIME` | No | `06:02` | Automatic report time (HH:MM) | No |
+| `DAILY_SUMMARY_RAW_RETENTION_DAYS` | No | `3` | Raw text retention days (1–30) | No |
+| `DAILY_SUMMARY_MIN_TOTAL_MESSAGES` | No | `10` | Minimum messages for a report | No |
+| `DAILY_SUMMARY_MIN_PARTICIPANTS` | No | `2` | Minimum participants | No |
+| `DAILY_SUMMARY_MIN_USER_MESSAGES` | No | `3` | Minimum messages for a personal summary | No |
+| `DAILY_SUMMARY_MAX_USERS` | No | `20` | Max members in personal summaries (1–100) | No |
+| `ONEKEY_DISCORD_USER_ID` | Optional pair | empty | User whose voice presence the OneKey API reports | Yes |
+| `ONEKEY_API_TOKEN` | Optional pair | empty | OneKey API bearer token (32+ chars, no padding) | Yes |
+| `PORT` | No | `8080` | OneKey API HTTP port | No |
 
-The Members intent is not required.
+`ONEKEY_DISCORD_USER_ID` and `ONEKEY_API_TOKEN` must be set together; a token
+shorter than 32 characters or padded with whitespace is rejected at startup.
 
-## Required Bot Permissions
-
-Required:
-
-- View Channels
-- Send Messages
-- Manage Messages
-- Read Message History
-- Embed Links
-- Use Application Commands (through the OAuth scope)
-
-`Attach Files` is not needed because reminders never re-upload attachments. Do not grant the bot Discord Administrator.
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `DISCORD_TOKEN` | Yes | — | Secret bot token |
-| `DISCORD_DEV_GUILD_ID` | No | empty | Development-only fast sync to one test guild |
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///./data/eslee_bot.db` | SQLite or PostgreSQL connection URL |
-| `LOG_LEVEL` | No | `INFO` | Standard Python log level |
-| `SCHEDULER_POLL_SECONDS` | No | `60` | Due-check interval, 10–300 seconds |
-| `ONEKEY_DISCORD_USER_ID` | As a pair | empty | Discord user whose cached guild voice state is queried |
-| `ONEKEY_API_TOKEN` | As a pair | empty | Secret Bearer token, at least 32 characters and not whitespace-padded; never place it in a URL or logs |
-| `PORT` | No | `8080` | HTTP listen port used when the OneKey API pair is configured |
-
-Daily summaries additionally use `DAILY_SUMMARY_ENABLED`, the configured guild/source/report channel IDs, `GEMINI_API_KEY`, and optional model, timezone, threshold, and retention settings. These settings enable only the summary feature; the bot itself does not require a production guild ID. Copy the exact keys from [.env.example](.env.example).
-
-No guild ID is required. Production always uses global commands and should leave `DISCORD_DEV_GUILD_ID` unset. When this optional value is set for local development, global sync still runs and a fast-updating copy is also synchronized to the specified test guild. `DISCORD_GUILD_ID`, `GUILD_ID`, and `TEST_GUILD_ID` are not used.
-
-## Running Locally
+### 4. Run
 
 ```bash
 python -m eslee_bot
 ```
 
-The first run creates `data/eslee_bot.db`. Missing or invalid required environment values produce a readable startup error without exposing secrets.
+The first run creates the `data/eslee_bot.db` SQLite file and its tables.
+Invalid required settings produce a readable startup error that does not
+expose secrets.
 
-When both OneKey settings are present, `GET /health` reports process and Discord readiness and authenticated `GET /api/voice-status` returns exactly `{ "in_voice": true|false }` — never the guild, channel, or channel name. Both endpoints send `Cache-Control: no-store`, and the authenticated one also sends `Vary: Authorization`. Detection is limited to guilds visible to the bot; DM and group-DM calls are outside the contract.
+For an optional Windows login task, use
+`scripts/install_scheduled_task.ps1` — but only for a local-only deployment,
+because running the same token elsewhere duplicates reminders.
 
-PostgreSQL URLs beginning with `postgresql://` or `postgres://` are automatically normalized to SQLAlchemy's `postgresql+asyncpg://` async dialect. Northflank's `sslmode=require` query option is translated to asyncpg's supported `ssl=require` option while preserving the TLS requirement.
-
-For an optional Windows login task, run `scripts/install_scheduled_task.ps1`. Do not run the same Discord token locally while a Northflank instance is active.
-
-## Migrating SQLite Data to PostgreSQL
-
-The read-only migration tool merges guild settings, forbidden words, announcements, and moderation violations into PostgreSQL inside one transaction. It preserves announcement IDs, skips natural-key duplicates, rolls back on conflicts, and can be safely checked first with a dry run.
-
-```powershell
-$env:DATABASE_URL = "<PostgreSQL URI>"
-python scripts/migrate_sqlite_to_postgres.py --dry-run
-python scripts/migrate_sqlite_to_postgres.py
-```
-
-See the [SQLite → PostgreSQL migration guide](docs/sqlite-to-postgres-migration.md) before running it. Never place the PostgreSQL password in code or Git.
-
-## Docker
+### 5. Docker
 
 ```bash
 cp .env.example .env
-# Edit .env, then:
+# put the token in .env, then:
 docker compose up --build -d
 docker compose logs -f bot
 ```
 
-The image runs as a non-root user. Compose mounts the named `bot-data` volume at `/app/data`, preserving SQLite data across container replacement without host bind-mount ownership problems.
+The container runs as a non-root user, and SQLite data persists in the
+`bot-data` volume.
 
-## Testing
+### 6. Northflank
+
+Northflank's Developer Sandbox free services and free PostgreSQL addon can
+run the bot 24/7. Free-tier terms can change; check the
+[pricing docs](https://northflank.com/docs/v1/application/billing/pricing-on-northflank).
+
+1. Create a project and a free **PostgreSQL addon**.
+2. In **Secrets → Create secret group**, link the addon and alias its
+   `POSTGRES_URI` to exactly `DATABASE_URL`.
+3. Add `DISCORD_TOKEN` to the same group — plus the `DAILY_SUMMARY_*`
+   variables and `GEMINI_API_KEY` if you use the summary. All of these must be
+   **runtime variables**, not build arguments.
+4. Create a **Combined Service** from this repository's `main` branch with
+   build type **Dockerfile** (path `/Dockerfile`) and instance count **1**.
+5. Leave ports unset unless you use the OneKey API — see
+   [the OneKey section](#7-onekey-voice-status-api-optional).
+6. Watch the deploy logs for `Database initialized` and the Discord login.
+
+Northflank's `postgresql://` URI is normalized to the async driver at
+runtime, and `sslmode=require` is translated to the proper TLS option.
+
+Local SQLite data is not migrated automatically. To move it, follow the
+[SQLite → PostgreSQL migration guide](docs/sqlite-to-postgres-migration.md)
+(Korean) and stop both bots during the migration.
+
+### 7. OneKey voice status API (optional)
+
+A small HTTP API in the same process that answers exactly one question:
+whether a designated user is currently in a voice channel. It exists for the
+author's Windows program (eslee OneKey) to decide when it is safe to restore
+audio devices after a game closes.
+
+- `GET /health` — process and Discord readiness, no authentication
+- `GET /api/voice-status` — requires `Authorization: Bearer <token>` and
+  returns only `{"in_voice": true|false}`; never the server or channel
+
+Enable it by setting `ONEKEY_DISCORD_USER_ID` and `ONEKEY_API_TOKEN`
+together. On Northflank, expose `PORT` (default 8080) as an HTTP public port
+with `/health` as the health check. Servers the bot is not in, and DM calls,
+are out of scope.
+
+### 8. Lint and test
 
 ```bash
 python -m ruff check .
 python -m pytest
 ```
 
-Tests cover exact and obfuscated moderation with false-positive guards, content classification and truncation, six-hour and overdue schedule math, permissions, guild isolation, daily-summary collection and startup backfill, Gemini error handling, and privacy-minimized persistence.
+GitHub Actions runs the same checks on every push and pull request.
 
-## CI
+## Documentation
 
-GitHub Actions runs on pushes and pull requests using Python 3.12. It installs the development extras, runs Ruff, then runs pytest.
-
-## Security
-
-- Tokens are loaded from `.env`, which is ignored by Git.
-- No token or user message body is written to application logs.
-- The bot neither requests nor requires Discord Administrator.
-- Discord rate limits are left to `discord.py`; no bypass is attempted.
-- User-provided announcement text cannot generate mentions when the bot creates its source message.
-
-## Privacy
-
-The moderation audit channel may display the original violating message to server administrators. SQLite stores the guild, user, and channel IDs, matched words, and timestamp—but not the original message body. Choose a restricted audit channel and define an appropriate retention policy for your server.
-
-## Roadmap
-
-- Configurable reminder intervals and active date ranges
-- Quiet hours
-- Role-based managers and escalating actions
-
-These are deliberately outside v1.
-
-The v1 deployment assumes one running bot process. Running multiple replicas can duplicate external Discord actions. Back up both databases before migration or model changes.
+- [Daily summary operations guide](docs/daily-summary.md) (Korean) —
+  environment variables, permissions, privacy, quota policy, failure handling
+- [SQLite → PostgreSQL migration guide](docs/sqlite-to-postgres-migration.md)
+  (Korean)
+- [CHANGELOG](CHANGELOG.md)
+- Bug reports and suggestions:
+  [GitHub Issues](https://github.com/esleeeeee/eslee-discord-bot/issues)
 
 ## License
 
-MIT. The current copyright label is `eslee`; update it if needed before publishing.
-
-Korean setup and operations documentation is available in [README.md](README.md).
+[MIT License](LICENSE)
