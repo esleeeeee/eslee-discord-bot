@@ -110,7 +110,9 @@ are checked in real time.
   line breaks, e.g. `사과, 바나나, TEST`.
 - `/금지어 삭제` — delete via the autocomplete list.
 - `/금지어 목록` — view the current server's words. **The only management
-  command open to every member**, so anyone can check the server rules.
+  command open to every member**, so anyone can check the server rules. There
+  is no cap on how many words a server can register, but the list displays
+  only the first 100; the title still shows the true total.
 
 Matching ignores letter case, and duplicate entries are merged
 automatically.
@@ -417,6 +419,9 @@ shorter than 32 characters or padded with whitespace is rejected at startup.
 ```bash
 python -m eslee_bot
 ```
+
+Installation also registers an `eslee-bot` command that runs the same entry
+point, so you can use it instead of `python -m eslee_bot`.
 
 The first run creates the `data/eslee_bot.db` SQLite file and its tables.
 Invalid required settings produce a readable startup error that does not
