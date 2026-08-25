@@ -11,7 +11,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-from eslee_bot.onekey_api import OneKeyApiServer, cached_voice_state, find_voice_status
+from eslee_bot.onekey_api import (
+    MAX_REQUESTED_GUILD_IDS,
+    OneKeyApiServer,
+    cached_voice_state,
+    find_voice_status,
+    intersect_guild_ids,
+    parse_requested_guild_ids,
+)
 
 TARGET_USER_ID = 123456789012345678
 # At least as long as ONEKEY_API_TOKEN_MIN_LENGTH so tests use a realistic token.
@@ -338,8 +345,11 @@ async def test_routed_health_needs_no_authentication() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/", "/api", "/api/voice-status/extra", "/metrics"])
-async def test_only_the_two_documented_routes_are_served(path: str) -> None:
+@pytest.mark.parametrize(
+    "path",
+    ["/", "/api", "/api/voice-status/extra", "/api/guild-intersection/extra", "/metrics"],
+)
+async def test_only_the_documented_routes_are_served(path: str) -> None:
     server = build_server()
 
     async with api_client(server) as client:
@@ -451,3 +461,309 @@ async def test_a_failed_bind_cleans_up_and_leaves_the_server_startable(
     await server.start()
     assert server.is_running is True
     await server.close()
+
+
+# --- POST /api/guild-intersection ------------------------------------------
+# The property this endpoint rests on is that the response is always a subset of
+# the request, so the bot can confirm a guild the caller already knows but can
+# never disclose one it does not.
+
+GUILD_A = "111111111111111111"
+GUILD_B = "222222222222222222"
+GUILD_UNKNOWN = "999999999999999999"
+
+
+def intersection_server(*guild_ids: str, ready: bool = True) -> OneKeyApiServer:
+    guilds = [FakeGuild(int(guild_id)) for guild_id in guild_ids]
+    return OneKeyApiServer(
+        bot=FakeBot(guilds, ready=ready),
+        target_user_id=TARGET_USER_ID,
+        api_token=API_TOKEN,
+        port=0,
+    )
+
+
+async def post_intersection(client, body, *, authorized=True, raw=None):
+    headers = {"Authorization": f"Bearer {API_TOKEN}"} if authorized else {}
+    if raw is not None:
+        headers["Content-Type"] = "application/json"
+        return await client.post("/api/guild-intersection", data=raw, headers=headers)
+    return await client.post("/api/guild-intersection", json=body, headers=headers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bot_guilds", "requested", "expected"),
+    [
+        ((GUILD_A, GUILD_B), [GUILD_A, GUILD_B], [GUILD_A, GUILD_B]),
+        ((GUILD_A, GUILD_B), [GUILD_B], [GUILD_B]),
+        ((GUILD_A,), [GUILD_A, GUILD_UNKNOWN], [GUILD_A]),
+        ((GUILD_A,), [GUILD_UNKNOWN], []),
+        ((GUILD_A,), [], []),
+        ((), [GUILD_A], []),
+    ],
+    ids=["all-shared", "one-shared", "partial", "none-shared", "empty-request", "bot-in-none"],
+)
+async def test_intersection_returns_only_the_requested_ids_the_bot_shares(
+    bot_guilds: tuple[str, ...],
+    requested: list[str],
+    expected: list[str],
+) -> None:
+    server = intersection_server(*bot_guilds)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": requested})
+
+        assert response.status == 200
+        body = await response.json()
+        assert body == {"guild_ids": expected}
+        assert set(body) == {"guild_ids"}
+
+
+@pytest.mark.asyncio
+async def test_the_response_is_always_a_subset_of_the_request() -> None:
+    """The invariant the whole design rests on.
+
+    Asserted as a subset relation rather than against a fixture, so it still
+    fails if anyone later turns this into an enumeration of the bot's guilds.
+    """
+    server = intersection_server(GUILD_A, GUILD_B, GUILD_UNKNOWN)
+
+    async with api_client(server) as client:
+        for requested in ([], [GUILD_A], [GUILD_B, GUILD_A], [GUILD_A, "123"]):
+            response = await post_intersection(client, {"guild_ids": requested})
+
+            assert response.status == 200
+            returned = (await response.json())["guild_ids"]
+            assert set(returned) <= set(requested)
+
+
+@pytest.mark.asyncio
+async def test_a_guild_the_caller_did_not_send_is_never_disclosed() -> None:
+    # The bot is in GUILD_B, but the caller never names it, so it must not leak.
+    server = intersection_server(GUILD_A, GUILD_B)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": [GUILD_A]})
+
+        assert response.status == 200
+        raw = await response.text()
+        assert GUILD_B not in raw
+        assert (await response.json()) == {"guild_ids": [GUILD_A]}
+
+
+@pytest.mark.asyncio
+async def test_intersection_never_carries_names_channels_or_user_data() -> None:
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": [GUILD_A, GUILD_UNKNOWN]})
+
+        raw = await response.text()
+        for leaked in ("name", "channel", "General", "user", str(TARGET_USER_ID)):
+            assert leaked not in raw
+
+
+@pytest.mark.asyncio
+async def test_duplicate_requested_ids_appear_once_in_caller_order() -> None:
+    server = intersection_server(GUILD_A, GUILD_B)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": [GUILD_B, GUILD_A, GUILD_B]})
+
+        assert (await response.json()) == {"guild_ids": [GUILD_B, GUILD_A]}
+
+
+@pytest.mark.asyncio
+async def test_intersection_accepts_exactly_the_maximum_number_of_ids() -> None:
+    server = intersection_server(GUILD_A)
+    requested = [str(900000000000000000 + index) for index in range(MAX_REQUESTED_GUILD_IDS - 1)]
+    requested.append(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": requested})
+
+        assert response.status == 200
+        assert (await response.json()) == {"guild_ids": [GUILD_A]}
+
+
+@pytest.mark.asyncio
+async def test_intersection_rejects_more_than_the_maximum_number_of_ids() -> None:
+    server = intersection_server(GUILD_A)
+    requested = [str(900000000000000000 + index) for index in range(MAX_REQUESTED_GUILD_IDS + 1)]
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": requested})
+
+        assert response.status == 400
+        assert (await response.json())["error"] == "invalid_guild_ids"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"guild_ids": [111111111111111111]},
+        {"guild_ids": [True]},
+        {"guild_ids": [None]},
+        {"guild_ids": [GUILD_A, 222222222222222222]},
+        {"guild_ids": ["not-a-number"]},
+        {"guild_ids": ["12345678901234567890123"]},
+        {"guild_ids": [""]},
+        {"guild_ids": GUILD_A},
+        {"guild_ids": {"0": GUILD_A}},
+        {"guild_ids": None},
+        {"other": [GUILD_A]},
+        [GUILD_A],
+        "guild_ids",
+        5,
+    ],
+    ids=[
+        "int-id",
+        "bool-id",
+        "null-id",
+        "mixed-int",
+        "non-numeric",
+        "too-long",
+        "empty-string",
+        "bare-string-not-list",
+        "object-not-list",
+        "null-list",
+        "missing-key",
+        "top-level-array",
+        "top-level-string",
+        "top-level-number",
+    ],
+)
+async def test_intersection_rejects_malformed_guild_ids(body: object) -> None:
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, body)
+
+        assert response.status == 400
+        assert (await response.json())["error"] == "invalid_guild_ids"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    ["", "{", "not json", '{"guild_ids": [', '{"guild_ids": ["1",]}'],
+    ids=["empty", "truncated", "plain-text", "unclosed-array", "trailing-comma"],
+)
+async def test_intersection_rejects_invalid_json(raw: str) -> None:
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, None, raw=raw)
+
+        assert response.status == 400
+        assert (await response.json())["error"] == "invalid_json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authorization",
+    [None, "Basic credentials", "Bearer", "Bearer wrong-token"],
+)
+async def test_intersection_rejects_missing_or_invalid_authorization(
+    authorization: str | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    headers = {"Authorization": authorization} if authorization else {}
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        with caplog.at_level(logging.DEBUG):
+            response = await client.post(
+                "/api/guild-intersection",
+                json={"guild_ids": [GUILD_A]},
+                headers=headers,
+            )
+
+        assert response.status == 401
+        assert await response.json() == {"error": "unauthorized"}
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Vary"] == "Authorization"
+        assert API_TOKEN not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_intersection_rejects_an_unauthorized_caller_before_validating() -> None:
+    # Auth gates everything, so an anonymous caller learns nothing from the
+    # difference between a malformed and a well-formed body.
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"nonsense": True}, authorized=False)
+
+        assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_intersection_returns_503_until_discord_is_ready() -> None:
+    # An empty intersection during startup would read as a truthful
+    # "none of your guilds", so it must be refused instead.
+    server = intersection_server(GUILD_A, ready=False)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": [GUILD_A]})
+
+        assert response.status == 503
+        assert await response.json() == {"error": "discord_not_ready"}
+        assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_intersection_carries_the_same_cache_headers_as_voice_status() -> None:
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await post_intersection(client, {"guild_ids": [GUILD_A]})
+
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Vary"] == "Authorization"
+
+
+@pytest.mark.asyncio
+async def test_intersection_rejects_other_http_methods() -> None:
+    server = intersection_server(GUILD_A)
+
+    async with api_client(server) as client:
+        response = await client.get(
+            "/api/guild-intersection",
+            headers={"Authorization": f"Bearer {API_TOKEN}"},
+        )
+
+        assert response.status == 405
+
+
+@pytest.mark.asyncio
+async def test_adding_the_intersection_route_does_not_regress_the_existing_ones() -> None:
+    server = intersection_server(GUILD_A)
+    auth = {"Authorization": f"Bearer {API_TOKEN}"}
+
+    async with api_client(server) as client:
+        health = await client.get("/health")
+        assert health.status == 200
+        assert await health.json() == {"status": "ok", "discord_ready": True}
+
+        voice = await client.get("/api/voice-status", headers=auth)
+        assert voice.status == 200
+        assert await voice.json() == {"in_voice": False}
+        assert voice.headers["Cache-Control"] == "no-store"
+        assert voice.headers["Vary"] == "Authorization"
+
+
+def test_parse_requested_guild_ids_accepts_a_well_formed_list() -> None:
+    assert parse_requested_guild_ids({"guild_ids": [GUILD_A, GUILD_B]}) == [GUILD_A, GUILD_B]
+
+
+def test_intersect_guild_ids_is_a_pure_subset_of_its_input() -> None:
+    guilds = [FakeGuild(int(GUILD_A)), FakeGuild(int(GUILD_B))]
+
+    matched = intersect_guild_ids(guilds, [GUILD_A, GUILD_UNKNOWN])
+
+    assert matched == [GUILD_A]
+    assert set(matched) <= {GUILD_A, GUILD_UNKNOWN}

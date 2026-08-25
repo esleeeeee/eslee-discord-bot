@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Add an authenticated OneKey HTTP API with `/health` and `/api/voice-status`.
+- Add `POST /api/guild-intersection`, which answers with the subset of the caller's own
+  guild ids that the bot also belongs to. The bot never enumerates its guilds, so the
+  reply cannot name a server the caller did not already send. Ids must be strings
+  (a 19-digit snowflake exceeds 2**53 and would be corrupted as a JSON number), at most
+  200 per request, and no names, channels or member data are returned.
 - Enable the non-privileged Discord Voice States intent and query cached guild voice states.
 - Add Windows `tzdata` and direct `aiohttp` runtime dependencies plus API regression tests.
 - Require `ONEKEY_API_TOKEN` to be at least 32 characters and reject whitespace-padded
