@@ -233,6 +233,31 @@ permission. Management responses are visible only to the invoker, and members
 without permission only receive a denial notice. The bot account itself does
 not need Administrator.
 
+## Per-server scope
+
+Invite the same bot to several servers and the features apply at different
+scopes.
+
+| Feature | Scope | Configured by |
+| --- | --- | --- |
+| Announcement reminders | **Per server** | Commands, in each server |
+| Forbidden words | **Per server** | Commands, in each server |
+| Admin log channel | **Per server** | `/설정 로그채널`, in each server |
+| Violation records | **Per server** | Automatic |
+| Daily conversation summary | **One designated server and channel only** | `DAILY_SUMMARY_*` in `.env` |
+| OneKey integration API | **One per bot process** | `ONEKEY_*` and `PORT` in `.env` |
+
+Announcements, forbidden words, settings, and violation records are stored
+against a server id, so one server's data is never visible from another.
+
+The daily summary is the exception. It runs only in the server named in `.env`;
+running `/하루요약` anywhere else returns a notice that the server is not the
+designated one. There is no way to give each server its own summary settings.
+
+The OneKey integration API is not a Discord server setting at all — it is turned
+on by the operator's environment variables. See
+[the OneKey section](#7-onekey-integration-api-optional).
+
 ## Good to know
 
 - The bot needs View Channels, Send Messages, Manage Messages, Read Message

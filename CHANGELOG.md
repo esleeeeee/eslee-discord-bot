@@ -2,31 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [0.1.0] - 2026-08-25
 
-- Add an authenticated OneKey HTTP API with `/health` and `/api/voice-status`.
-- Add `POST /api/guild-intersection`, which answers with the subset of the caller's own
-  guild ids that the bot also belongs to. The bot never enumerates its guilds, so the
-  reply cannot name a server the caller did not already send. Ids must be strings
-  (a 19-digit snowflake exceeds 2**53 and would be corrupted as a JSON number), at most
-  200 per request, and no names, channels or member data are returned.
-- Enable the non-privileged Discord Voice States intent and query cached guild voice states.
-- Add Windows `tzdata` and direct `aiohttp` runtime dependencies plus API regression tests.
-- Require `ONEKEY_API_TOKEN` to be at least 32 characters and reject whitespace-padded
-  tokens at configuration time instead of silently trimming them.
-- Return only `{"in_voice": boolean}` from `/api/voice-status`; the guild, channel, and
-  channel name are no longer disclosed.
-- Send `Cache-Control: no-store` from both endpoints and `Vary: Authorization` from the
-  authenticated one so no cache stores or shares a presence response.
-- Hide rejected input from settings validation errors so a bad token or database URL
-  cannot reach a deployment log.
-- Read the voice state through `Guild._voice_state_for`/`Member.voice`. `Guild` has no
-  public `voice_states` mapping, so the previous lookup reported every user as absent
-  against real Discord objects while mocked tests passed.
-- Compare the bearer credential as bytes so a non-ASCII or malformed Authorization
-  header returns 401 instead of a 500 with a traceback.
-
-## [0.1.0] - Unreleased
+First tagged release. Everything below shipped to `main` before the tag.
 
 ### Added
 
@@ -56,4 +34,32 @@ All notable changes to this project will be documented in this file.
 - `/하루요약 상태` now reports message count, estimated input tokens, planned and
   completed chunks, Gemini calls against the cap, the last failed stage, and the
   cooldown end time.
+- An authenticated OneKey HTTP API served in the bot process, with `/health` and
+  `GET /api/voice-status`.
+- `POST /api/guild-intersection`, which answers with the subset of the caller's own
+  guild ids that the bot also belongs to. The bot never enumerates its guilds, so the
+  reply cannot name a server the caller did not already send. Ids must be strings
+  (a 19-digit snowflake exceeds 2**53 and would be corrupted as a JSON number), at most
+  200 per request, and no names, channels or member data are returned.
+- The non-privileged Discord Voice States intent, and cached guild voice-state queries.
+- Windows `tzdata` and direct `aiohttp` runtime dependencies plus API regression tests.
 - Docker, Docker Compose, Ruff, pytest, and GitHub Actions support.
+
+### Changed
+
+- `ONEKEY_API_TOKEN` must be at least 32 characters; whitespace-padded tokens are
+  rejected at configuration time instead of being silently trimmed.
+- `/api/voice-status` returns only `{"in_voice": boolean}`; the guild, channel, and
+  channel name are no longer disclosed.
+- Both endpoints send `Cache-Control: no-store`, and the authenticated ones send
+  `Vary: Authorization`, so no cache stores or shares a presence response.
+- Settings validation errors no longer echo the rejected input, so a bad token or
+  database URL cannot reach a deployment log.
+
+### Fixed
+
+- Read the voice state through `Guild._voice_state_for`/`Member.voice`. `Guild` has no
+  public `voice_states` mapping, so the previous lookup reported every user as absent
+  against real Discord objects while mocked tests passed.
+- Compare the bearer credential as bytes so a non-ASCII or malformed Authorization
+  header returns 401 instead of a 500 with a traceback.
