@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from hmac import compare_digest
@@ -11,6 +12,17 @@ from aiohttp import web
 logger = logging.getLogger(__name__)
 
 NO_STORE = "no-store"
+
+# A Discord user can belong to 100 guilds, or 200 with Nitro, and the caller is
+# only ever meant to send the guilds it already knows. 200 is therefore the real
+# domain maximum rather than an arbitrary ceiling.
+MAX_REQUESTED_GUILD_IDS = 200
+# 200 ids of ~20 digits plus JSON punctuation is about 4 KB; the rest is slack.
+# aiohttp's 1 MiB default is ~250x more than this endpoint can ever need.
+MAX_REQUEST_BODY_BYTES = 16 * 1024
+# Snowflakes are unsigned 64-bit, so at most 20 digits. Strings only: a 19-digit
+# snowflake exceeds 2**53, so a JSON number would be silently corrupted.
+_SNOWFLAKE_PATTERN = re.compile(r"^[0-9]{1,20}$")
 
 
 def _credential_bytes(value: str) -> bytes:
@@ -75,6 +87,49 @@ def find_voice_status(guilds: Iterable[Any], target_user_id: int) -> VoiceStatus
     return VoiceStatus(in_voice=False)
 
 
+class GuildIdsError(ValueError):
+    """The caller's guild id list was not usable."""
+
+
+def parse_requested_guild_ids(payload: Any) -> list[str]:
+    """Validate a caller-supplied guild id list, rejecting anything ambiguous.
+
+    Strict about types on purpose. A bare string would otherwise iterate
+    character by character and produce a silently empty intersection instead of
+    an error, and bool is a subclass of int, so only str is accepted.
+    """
+    if not isinstance(payload, dict):
+        raise GuildIdsError("body must be a JSON object")
+    if "guild_ids" not in payload:
+        raise GuildIdsError("guild_ids is required")
+    raw = payload["guild_ids"]
+    if not isinstance(raw, list):
+        raise GuildIdsError("guild_ids must be an array of strings")
+    if len(raw) > MAX_REQUESTED_GUILD_IDS:
+        raise GuildIdsError(f"guild_ids must hold at most {MAX_REQUESTED_GUILD_IDS} entries")
+    for item in raw:
+        if not isinstance(item, str) or not _SNOWFLAKE_PATTERN.match(item):
+            raise GuildIdsError("every guild id must be a string of 1-20 digits")
+    return raw
+
+
+def intersect_guild_ids(guilds: Iterable[Any], requested: list[str]) -> list[str]:
+    """Return the requested ids the bot is also in, in the caller's order.
+
+    The result is always a subset of `requested`: the bot's own ids are only ever
+    used as a membership test, never as a source of output, so this can never
+    disclose a guild the caller did not already name.
+    """
+    present = {str(guild.id) for guild in guilds}
+    seen: set[str] = set()
+    matched: list[str] = []
+    for guild_id in requested:
+        if guild_id in present and guild_id not in seen:
+            seen.add(guild_id)
+            matched.append(guild_id)
+    return matched
+
+
 class OneKeyApiServer:
     def __init__(
         self,
@@ -93,9 +148,10 @@ class OneKeyApiServer:
         self._host = host
         self._port = port
         self._runner: web.AppRunner | None = None
-        self.application = web.Application()
+        self.application = web.Application(client_max_size=MAX_REQUEST_BODY_BYTES)
         self.application.router.add_get("/health", self.health)
         self.application.router.add_get("/api/voice-status", self.voice_status)
+        self.application.router.add_post("/api/guild-intersection", self.guild_intersection)
 
     @property
     def is_running(self) -> bool:
@@ -156,6 +212,48 @@ class OneKeyApiServer:
             )
         status = find_voice_status(self._bot.guilds, self._target_user_id)
         return web.json_response(status.response_body(), headers=headers)
+
+    async def guild_intersection(self, request: web.Request) -> web.Response:
+        """Confirm which of the caller's own guilds this bot is also in.
+
+        The caller sends the guild ids it already knows locally, and only those
+        are echoed back. The bot never enumerates its own guild list, so a
+        caller cannot learn about a guild it did not already name — which is why
+        this stays safe even though the shared token is not a real secret.
+        """
+        headers = {"Cache-Control": NO_STORE, "Vary": "Authorization"}
+        if not self._is_authorized(request):
+            return web.json_response(
+                {"error": "unauthorized"},
+                status=401,
+                headers={**headers, "WWW-Authenticate": "Bearer"},
+            )
+        if not self._bot.is_ready():
+            # An empty intersection during startup would read as a truthful
+            # "none of your guilds", so refuse rather than answer wrongly.
+            return web.json_response(
+                {"error": "discord_not_ready"},
+                status=503,
+                headers=headers,
+            )
+        try:
+            payload = await request.json()
+        except ValueError:
+            return web.json_response(
+                {"error": "invalid_json"},
+                status=400,
+                headers=headers,
+            )
+        try:
+            requested = parse_requested_guild_ids(payload)
+        except GuildIdsError as error:
+            return web.json_response(
+                {"error": "invalid_guild_ids", "detail": str(error)},
+                status=400,
+                headers=headers,
+            )
+        matched = intersect_guild_ids(self._bot.guilds, requested)
+        return web.json_response({"guild_ids": matched}, headers=headers)
 
     def _is_authorized(self, request: web.Request) -> bool:
         authorization = request.headers.get("Authorization", "")

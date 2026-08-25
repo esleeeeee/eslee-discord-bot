@@ -17,7 +17,8 @@ EsleeBot.setup_hook
           ├─ Discord Gateway / cached Guild.voice_states
           └─ aiohttp 0.0.0.0:PORT
                 ├─ GET /health
-                └─ GET /api/voice-status
+                ├─ GET /api/voice-status
+                └─ POST /api/guild-intersection
 ```
 
 `OneKeyApiServer`는 별도 thread나 event loop를 만들지 않는다. discord.py와 aiohttp가 같은 asyncio loop를 공유하므로 voice state cache를 동기화 장치 없이 읽을 수 있다. `EsleeBot.close()`가 API runner를 먼저 정리한 뒤 기존 daily summary, announcement scheduler, database, Discord client를 닫는다.
@@ -25,6 +26,15 @@ EsleeBot.setup_hook
 ## 음성 상태 조회
 
 `find_voice_status()`는 각 `Guild.voice_states` mapping에서 환경변수로 검증된 정수 사용자 ID를 찾는다. `VoiceState.channel`이 존재하는 첫 항목을 발견하면 `{ "in_voice": true }`를, 없으면 `{ "in_voice": false }`를 반환한다. 어느 guild·channel인지는 외부 응답에 포함하지 않는다. 네트워크 REST 호출은 수행하지 않는다.
+
+## 서버 교집합 조회
+
+`POST /api/guild-intersection`은 호출자가 이미 알고 있는 guild ID 배열을 받아
+그중 봇도 가입한 ID만 돌려준다. 봇의 guild 목록은 포함 여부 판정에만 쓰이고
+출력의 원천이 되지 않으므로, 응답은 언제나 요청의 부분집합이다. 따라서 토큰이
+유출되어도 호출자가 이미 아는 서버를 확인해 줄 뿐, 모르던 서버를 알려줄 수는
+없다. ID는 문자열만 받는다. 19자리 snowflake는 2**53을 넘어 JSON 숫자로 오가면
+조용히 값이 바뀐다. 최대 200개이며, 사용자 멤버십은 조회하지 않는다.
 
 ## 인증과 설정
 

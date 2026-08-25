@@ -458,7 +458,7 @@ run the bot 24/7. Free-tier terms can change; check the
 4. Create a **Combined Service** from this repository's `main` branch with
    build type **Dockerfile** (path `/Dockerfile`) and instance count **1**.
 5. Leave ports unset unless you use the OneKey API — see
-   [the OneKey section](#7-onekey-voice-status-api-optional).
+   [the OneKey section](#7-onekey-integration-api-optional).
 6. Watch the deploy logs for `Database initialized` and the Discord login.
 
 Northflank's `postgresql://` URI is normalized to the async driver at
@@ -468,16 +468,20 @@ Local SQLite data is not migrated automatically. To move it, follow the
 [SQLite → PostgreSQL migration guide](docs/sqlite-to-postgres-migration.md)
 (Korean) and stop both bots during the migration.
 
-### 7. OneKey voice status API (optional)
+### 7. OneKey integration API (optional)
 
-A small HTTP API in the same process that answers exactly one question:
-whether a designated user is currently in a voice channel. It exists for the
-author's Windows program (eslee OneKey) to decide when it is safe to restore
-audio devices after a game closes.
+A small HTTP API in the same process, for the author's Windows program (eslee
+OneKey) to decide when it is safe to restore audio devices after a game closes
+and to learn which servers it can act on.
 
 - `GET /health` — process and Discord readiness, no authentication
 - `GET /api/voice-status` — requires `Authorization: Bearer <token>` and
   returns only `{"in_voice": true|false}`; never the server or channel
+- `POST /api/guild-intersection` — same authentication, takes
+  `{"guild_ids": ["...", ...]}` and returns only the ids the bot is also in.
+  The reply is always a subset of the request, so it can confirm a server the
+  caller already knows but never reveal one it does not. Ids must be strings,
+  at most 200 of them, and no names or member data are returned.
 
 Enable it by setting `ONEKEY_DISCORD_USER_ID` and `ONEKEY_API_TOKEN`
 together. On Northflank, expose `PORT` (default 8080) as an HTTP public port

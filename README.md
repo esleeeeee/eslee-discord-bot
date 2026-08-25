@@ -440,7 +440,7 @@ Northflank Developer Sandbox의 무료 서비스와 무료 PostgreSQL Addon으�
 4. 이 저장소의 `main` 브랜치로 **Combined Service**를 만들고 build type을
    **Dockerfile**(경로 `/Dockerfile`), 인스턴스 수를 **1**로 설정합니다.
 5. OneKey API를 쓰지 않는다면 포트 설정은 비워 둡니다. 쓴다면
-   [OneKey 절](#7-onekey-음성-상태-api-선택)을 참고하세요.
+   [OneKey 절](#7-onekey-연동-api-선택)을 참고하세요.
 6. 배포 로그에서 `Database initialized`와 Discord 로그인 메시지를
    확인합니다.
 
@@ -451,15 +451,20 @@ Northflank의 `postgresql://` 주소는 실행 시 자동으로 비동기 드라
 [SQLite → PostgreSQL 데이터 이전 가이드](docs/sqlite-to-postgres-migration.md)를
 따르고, 이전 중에는 두 환경의 봇을 모두 중지하세요.
 
-### 7. OneKey 음성 상태 API (선택)
+### 7. OneKey 연동 API (선택)
 
-같은 프로세스에서 실행되는 작은 HTTP API로, 지정한 사용자가 음성채널에
-있는지 여부 하나만 알려줍니다. 제작자의 Windows 프로그램(eslee OneKey)이
-게임 종료 후 오디오 장치를 되돌릴 시점을 판단하는 데 사용합니다.
+같은 프로세스에서 실행되는 작은 HTTP API입니다. 제작자의 Windows
+프로그램(eslee OneKey)이 게임 종료 후 오디오 장치를 되돌릴 시점을 판단하고,
+어느 서버를 다룰 수 있는지 확인하는 데 사용합니다.
 
 - `GET /health` — 인증 없이 프로세스와 Discord 준비 상태를 반환
 - `GET /api/voice-status` — `Authorization: Bearer <토큰>` 인증 후
   `{"in_voice": true|false}`만 반환. 어느 서버·채널인지는 알려주지 않습니다.
+- `POST /api/guild-intersection` — 같은 인증으로
+  `{"guild_ids": ["...", ...]}`를 받아 그중 봇도 가입한 ID만 돌려줍니다.
+  응답은 항상 요청의 부분집합이라, 이미 알고 있는 서버를 확인해 줄 뿐
+  요청에 없던 서버는 알려주지 않습니다. ID는 문자열만, 최대 200개까지
+  받습니다. 서버 이름이나 멤버 정보는 반환하지 않습니다.
 
 `ONEKEY_DISCORD_USER_ID`와 `ONEKEY_API_TOKEN`을 함께 설정하면 켜집니다.
 Northflank에서는 `PORT`(기본 8080)를 HTTP public port로 노출하고 health
