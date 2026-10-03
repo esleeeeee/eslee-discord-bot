@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-10-03
+
+Source release candidate; production deployment is a separate operation.
+
+- Commit persistent announcement dispatch claims before Discord send, preventing
+  free retries after uncertain delivery or competing bot instances.
+- Preserve uncertain operations across restarts. Add management-only message
+  reconciliation and an explicit offline reset for verified unsent work after all
+  bot instances have stopped. Do not claim exactly-once delivery.
+- Show operation ID/time, last successful delivery and next schedule in paged
+  announcement lists; retain guild and permission boundaries.
+- Add additive database migration, SQLite fault/concurrency regressions and opt-in
+  disposable PostgreSQL integration tests. PostgreSQL 17.11 tests cover independent
+  instances, real finalization constraint failure, restart, stale claim, migration
+  and scoped recovery with fake Discord sends.
+- Document uncertainty recovery and data retention/deletion procedures. Scheduling,
+  moderation and daily-summary behavior remain covered by existing tests.
+
+Upgrade: stop every instance, back up the database according to your operations
+policy, deploy the new source consistently, and restart. Initialization adds the
+nullable dispatch columns. Do not mix old binaries that ignore claims with the new
+scheduler. No live Discord messages or production database changes were used in
+local verification.
+
 ## [0.1.0] - 2026-08-25
 
 First tagged release. Everything below shipped to `main` before the tag.

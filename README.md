@@ -514,3 +514,56 @@ GitHub Actions가 push와 pull request마다 같은 검사를 자동 실행합�
 ## 라이선스
 
 [MIT License](LICENSE)
+
+
+### 송신 미확정 복구 (2026-10-03)
+
+공지 전송은 DB에 작업 ID를 먼저 커밋하고 전송합니다. 같은 DB를 쓰는 여러 봇의
+경합은 조건부 갱신으로 한 작업만 획득합니다. Discord 전송과 DB 커밋은 하나의
+트랜잭션이 아니므로 exactly-once를 보장하지 않습니다. 타임아웃·취소·송신 후 DB
+오류·프로세스 종료 뒤에는 자동 재송신하지 않고 미확정 상태를 유지합니다.
+권한 거부(403)처럼 명백한 미전송은 claim을 해제하여 권한 복구 후 재시도합니다.
+
+`/공지 목록`은 미확정 작업 ID/시작 시각, 마지막 성공, 다음 일정(UTC)을 표시합니다.
+실제 리마인드를 찾았으면 소유자/관리자가 `/공지 송신복구`에 공지 ID와 메시지 ID를
+입력합니다. 같은 서버·채널에서 이 봇이 보낸 메시지와 footer의 작업 ID를 확인한
+경우에만 메시지 ID와 일정을 복구합니다. 일반 사용자는 이 명령을 쓸 수 없습니다.
+
+작업 기록 직후 송신 전에 중단되어 메시지가 없을 수도 있습니다. 먼저 **모든 봇
+인스턴스를 중지**하고 진행 중인 요청이 끝났는지 확인한 뒤 채널에서 해당 작업
+리마인드가 실제로 없음을 확인하세요. 확신할 수 없으면 미확정 상태를 유지합니다.
+미전송이 확실할 때만 운영자가 다음 오프라인 도구로 정확한 작업 ID를 해제합니다.
+
+```console
+python -m eslee_bot.recover_dispatch --database-url sqlite+aiosqlite:///data/eslee.db --guild-id 123 --announcement-id 1 --dispatch-id 작업ID --bots-stopped --verified-not-delivered
+```
+
+이는 운영자의 중지·미전송 확인을 요구하며 원격 인스턴스 중지를 자동 검사하지
+않습니다. DB URL은 실제 배포 경로로 대체하세요. 두 확인 플래그가 없거나 서버/
+공지/작업 ID가 다르면 해제하지 않습니다. 봇을 다시 실행하면 원래 due 일정에서
+재시도합니다. 자동 TTL 해제나 실행 중인 봇에서 강제 재송신하는 명령은 없습니다.
+
+### 데이터 보존과 삭제
+
+공지 원문 snapshot, 원본/리마인드 메시지 ID 및 미확정 작업은 등록 공지와 함께
+DB에 남습니다. `/공지 삭제`는 해당 서버의 DB 등록을 지우며 Discord 원본/과거
+메시지를 지우지 않습니다. 미확정 공지는 위 절차로 확인한 뒤 삭제하세요.
+요약 원문은 설정한 보존 기간(기본 3일)에 따라 스케줄러가 정리하고, 리포트/통계는
+자동 만료되지 않습니다. 봇이 꺼져 있는 동안에는 원문 정리도 실행되지 않습니다.
+완전 삭제가 필요한 운영자는 모든 인스턴스를 중지하고 DB 백업 정책을 확인한 뒤
+해당 서버의 원문·리포트·공지·위반 기록을 DB에서 삭제하고 Discord에 게시된
+리포트/리마인드도 별도로 삭제해야 합니다. 백업·로그는 별도 보존 정책을 적용합니다.
+이 감사에서는 실제 DB나 채팅 데이터를 읽거나 지우지 않았습니다.
+
+
+### Disposable PostgreSQL verification
+
+`tests/test_postgres_dispatch.py` is opt-in and refuses ordinary database names or
+non-loopback hosts. Supply `ESLEE_TEST_POSTGRES_URL` only for a newly created local
+database named `eslee_audit_` followed by 32 hexadecimal characters, and set
+`ESLEE_TEST_POSTGRES_OWNED=1`. The tests create/drop application tables in that
+disposable database. Never point this variable at a deployed or personal database.
+Run `python -m pytest tests/test_postgres_dispatch.py -q`; normal CI skips these
+checks when the URL is absent. The 2026-10-03 verification used a fresh PostgreSQL
+17.11 portable instance, six passing tests, fake Discord sends, then stopped and
+removed the instance. The audit directory holds logs and download/build provenance.

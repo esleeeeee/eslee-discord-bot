@@ -57,6 +57,11 @@ class Announcement(TimestampMixin, Base):
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_send_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     reminder_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # A committed claim is never automatically expired: Discord may already have accepted it.
+    dispatch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ForbiddenWord(TimestampMixin, Base):

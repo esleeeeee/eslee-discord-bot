@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eslee-discord-bot"
-version = "0.1.0"
+version = "0.1.1"
 description = "Persistent announcement reminders and forbidden-word moderation for small Discord servers."
 readme = "README.md"
 requires-python = ">=3.12"
