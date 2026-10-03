@@ -54,7 +54,8 @@ class AnnouncementCog(commands.Cog):
         result = "✅ 공지로 등록되었고 첫 리마인드를 전송했습니다."
         if not sent:
             result = (
-                "⚠️ 공지는 등록했지만 첫 전송에 실패했습니다. 권한을 확인하면 자동 재시도합니다."
+                "⚠️ 공지는 등록했지만 첫 전송에 실패했습니다. 권한을 확인하세요. "
+                "송신 미확정은 목록 확인 후 복구가 필요합니다."
             )
         await interaction.followup.send(result, ephemeral=True)
 
@@ -130,11 +131,27 @@ class AnnouncementCog(commands.Cog):
         for item in announcements[:25]:
             preview = truncate_text(item.content_snapshot.replace("\n", " ") or "(본문 없음)", 70)
             url = make_message_jump_url(item.guild_id, item.channel_id, item.source_message_id)
-            lines.append(f"**#{item.id}** · {item.announcement_type} · [{preview}]({url})")
-        embed = discord.Embed(
-            title="📢 활성 공지 목록", description="\n".join(lines), color=discord.Color.gold()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            status = (
+                f" · ⚠️ 송신 미확정 `{item.dispatch_id}` ({item.dispatch_started_at} UTC)"
+                if item.dispatch_id
+                else ""
+            )
+            last = item.last_sent_at.isoformat() if item.last_sent_at else "없음"
+            next_time = "복구 대기" if item.dispatch_id else item.next_send_at.isoformat()
+            lines.append(
+                f"**#{item.id}** · {item.announcement_type} · [{preview}]({url}){status}"
+                f"\n마지막 성공: {last} · 다음 일정(UTC): {next_time}"
+            )
+        for offset in range(0, len(lines), 10):
+            embed = discord.Embed(
+                title="📢 활성 공지 목록",
+                description="\n".join(lines[offset : offset + 10]),
+                color=discord.Color.gold(),
+            )
+            if offset == 0:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def announcement_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -182,6 +199,28 @@ class AnnouncementCog(commands.Cog):
         sent = await self.bot.announcement_scheduler.send_now(announcement_id, interaction.guild.id)
         text = "✅ 공지 리마인드를 전송했습니다." if sent else "🚫 공지를 전송하지 못했습니다."
         await interaction.followup.send(text, ephemeral=True)
+
+    @announcement_group.command(
+        name="송신복구", description="미확정 송신의 실제 리마인드 메시지를 확인합니다."
+    )
+    async def reconcile_dispatch(
+        self, interaction: discord.Interaction, announcement_id: int, message_id: str
+    ) -> None:
+        if not await require_management_permission(interaction) or interaction.guild is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            recovered = await self.bot.announcement_scheduler.reconcile(
+                announcement_id, interaction.guild.id, int(message_id)
+            )
+        except (ValueError, discord.HTTPException):
+            recovered = False
+        await interaction.followup.send(
+            "✅ 송신 결과와 다음 일정을 복구했습니다."
+            if recovered
+            else "🚫 해당 봇 리마인드를 확인하지 못했습니다. 미확정 상태를 유지합니다.",
+            ephemeral=True,
+        )
 
 
 async def setup(bot: EsleeBot) -> None:

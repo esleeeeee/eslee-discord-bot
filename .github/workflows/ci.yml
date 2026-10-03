@@ -27,4 +27,26 @@ jobs:
         run: python -m ruff check .
 
       - name: Pytest
-        run: python -m pytest
+        run: python -m pytest --junitxml=test-results/pytest.xml
+
+      - name: Record verification source
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          output = pathlib.Path('test-results')
+          output.mkdir(exist_ok=True)
+          (output / 'source.json').write_text(json.dumps({
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'checks': ['ruff', 'pytest'],
+              'note': 'See workflow step outcomes and pytest.xml for pass/fail results.'
+          }, indent=2) + '\n')
+          PY
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-verification
+          path: test-results/

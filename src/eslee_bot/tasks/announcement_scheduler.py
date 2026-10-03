@@ -4,6 +4,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import discord
 
@@ -95,6 +96,13 @@ class AnnouncementScheduler:
         return channel if isinstance(channel, discord.abc.Messageable) else None
 
     async def _dispatch(self, announcement: Announcement) -> bool:
+        if announcement.dispatch_id is not None:
+            logger.warning(
+                "Announcement %s has uncertain dispatch %s; reconcile before retry",
+                announcement.id,
+                announcement.dispatch_id,
+            )
+            return False
         try:
             channel = await self._get_channel(announcement.channel_id)
         except discord.Forbidden:
@@ -119,6 +127,13 @@ class AnnouncementScheduler:
             logger.exception("Discord API failed while fetching announcement %s", announcement.id)
             return False
 
+        dispatch_id = uuid4().hex
+        async with self.bot.database.session_factory() as session:
+            if not await AnnouncementRepository(session).claim_dispatch(
+                announcement, dispatch_id, utc_now()
+            ):
+                return False
+
         if announcement.reminder_message_id:
             try:
                 old_reminder = await channel.fetch_message(  # type: ignore[attr-defined]
@@ -139,12 +154,17 @@ class AnnouncementScheduler:
             announcement.guild_id, announcement.channel_id, announcement.source_message_id
         )
         embed = build_reminder_embed(content, jump_url)
+        embed.set_footer(text=f"dispatch:{dispatch_id}")
         try:
             reminder = await channel.send(
                 embed=embed, allowed_mentions=discord.AllowedMentions.none()
             )
         except discord.Forbidden:
             logger.warning("Cannot send reminder for announcement %s", announcement.id)
+            async with self.bot.database.session_factory() as session:
+                await AnnouncementRepository(session).release_unsent_dispatch(
+                    announcement.id, dispatch_id
+                )
             return False
         except discord.HTTPException:
             logger.exception("Failed to send reminder for announcement %s", announcement.id)
@@ -161,8 +181,39 @@ class AnnouncementScheduler:
                 next_send_at=next_future_slot(announcement.next_send_at, sent_at),
                 content_snapshot=source.content,
                 announcement_type=classify_content(content).value,
+                dispatch_id=dispatch_id,
             )
         logger.info("Announcement %s reminder sent", announcement.id)
+        return True
+
+    async def reconcile(self, announcement_id: int, guild_id: int, message_id: int) -> bool:
+        """Adopt an observed bot message; never resend an uncertain operation."""
+        async with self.bot.database.session_factory() as session:
+            announcement = await AnnouncementRepository(session).get(announcement_id, guild_id)
+        if announcement is None or announcement.dispatch_id is None:
+            return False
+        channel = await self._get_channel(announcement.channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return False
+        message = await channel.fetch_message(message_id)
+        if self.bot.user is None or message.author.id != self.bot.user.id:
+            return False
+        if not any(
+            embed.footer.text == f"dispatch:{announcement.dispatch_id}" for embed in message.embeds
+        ):
+            return False
+        sent_at = message.created_at
+        async with self.bot.database.session_factory() as session:
+            await AnnouncementRepository(session).mark_sent(
+                announcement.id,
+                announcement.guild_id,
+                reminder_message_id=message.id,
+                sent_at=sent_at,
+                next_send_at=next_future_slot(announcement.next_send_at, utc_now()),
+                content_snapshot=announcement.content_snapshot,
+                announcement_type=announcement.announcement_type,
+                dispatch_id=announcement.dispatch_id,
+            )
         return True
 
     async def _disable_missing_source(self, announcement: Announcement, reason: str) -> None:

@@ -4,7 +4,7 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,6 +102,37 @@ class AnnouncementRepository:
             announcement.enabled = False
             await self.session.commit()
 
+    async def claim_dispatch(
+        self, announcement: Announcement, dispatch_id: str, now: datetime
+    ) -> bool:
+        # CAS schedule and result so stale ticks cannot claim a completed slot.
+        result = await self.session.execute(
+            update(Announcement)
+            .where(
+                Announcement.id == announcement.id,
+                Announcement.guild_id == announcement.guild_id,
+                Announcement.enabled.is_(True),
+                Announcement.dispatch_id.is_(None),
+                Announcement.next_send_at == announcement.next_send_at,
+                Announcement.last_sent_at == announcement.last_sent_at,
+            )
+            .values(dispatch_id=dispatch_id, dispatch_started_at=now)
+        )
+        await self.session.commit()
+        return bool(result.rowcount)
+
+    async def release_unsent_dispatch(self, announcement_id: int, dispatch_id: str) -> None:
+        # Only a definitive rejection BEFORE delivery permits automatic retry.
+        await self.session.execute(
+            update(Announcement)
+            .where(
+                Announcement.id == announcement_id,
+                Announcement.dispatch_id == dispatch_id,
+            )
+            .values(dispatch_id=None, dispatch_started_at=None)
+        )
+        await self.session.commit()
+
     async def mark_sent(
         self,
         announcement_id: int,
@@ -112,7 +143,30 @@ class AnnouncementRepository:
         next_send_at: datetime,
         content_snapshot: str,
         announcement_type: str,
+        dispatch_id: str | None = None,
     ) -> None:
+        if dispatch_id is not None:
+            result = await self.session.execute(
+                update(Announcement)
+                .where(
+                    Announcement.id == announcement_id,
+                    Announcement.guild_id == guild_id,
+                    Announcement.dispatch_id == dispatch_id,
+                )
+                .values(
+                    reminder_message_id=reminder_message_id,
+                    last_sent_at=sent_at,
+                    next_send_at=next_send_at,
+                    content_snapshot=content_snapshot,
+                    announcement_type=announcement_type,
+                    dispatch_id=None,
+                    dispatch_started_at=None,
+                )
+            )
+            if not result.rowcount:
+                raise ValueError("Dispatch claim is no longer owned")
+            await self.session.commit()
+            return
         announcement = await self.get(announcement_id, guild_id)
         if announcement is not None:
             announcement.reminder_message_id = reminder_message_id
@@ -418,8 +472,7 @@ class DailyReportRepository:
             and ensure_utc(report.updated_at) < replace_if_updated_before
         )
         if not regenerate and not (
-            (replace_preview and report.status.startswith("preview_"))
-            or replace_outdated_final
+            (replace_preview and report.status.startswith("preview_")) or replace_outdated_final
         ):
             raise DuplicateReportError(f"Daily report already has status {report.status}")
         report.status = "generating"

@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 # Columns added after daily_reports first shipped. create_all() only creates
 # missing tables, so existing production rows need an additive ALTER instead.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "announcements": {
+        "dispatch_id": "VARCHAR(32)",
+        "dispatch_started_at": "TIMESTAMP WITH TIME ZONE",
+    },
     "daily_reports": {
         "ai_request_count": "INTEGER NOT NULL DEFAULT 0",
         "ai_request_total": "INTEGER NOT NULL DEFAULT 0",
