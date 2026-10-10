@@ -109,6 +109,8 @@ are checked in real time.
 - `/금지어 일괄추가` — add up to 500 words at once, separated by commas or
   line breaks, e.g. `사과, 바나나, TEST`.
 - `/금지어 삭제` — delete via the autocomplete list.
+- `/금지어 일괄삭제` — delete **every** word on this server. It can't be undone,
+  so it only runs once the invoker presses the confirm button within 60 seconds.
 - `/금지어 목록` — view the current server's words. **The only management
   command open to every member**, so anyone can check the server rules. There
   is no cap on how many words a server can register, but the list displays
@@ -224,6 +226,7 @@ Operator-facing environment variables and the detailed policy live in the
 | Add one forbidden word | `/금지어 추가` | Owner/Admin |
 | Add many forbidden words | `/금지어 일괄추가` | Owner/Admin |
 | Delete a forbidden word | `/금지어 삭제` | Owner/Admin |
+| Delete all forbidden words | `/금지어 일괄삭제` | Owner/Admin |
 | View the server's forbidden words | `/금지어 목록` | **Every member** |
 | Set the admin log channel | `/설정 로그채널` | Owner/Admin |
 | Summary status, preview, repost | `/하루요약 상태` · `오늘` · `어제` · `연결확인` | Owner/Admin of the designated server + operator setup |

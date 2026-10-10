@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import discord
@@ -18,7 +19,10 @@ from eslee_bot.services.moderation_service import (
     find_forbidden_words,
     parse_forbidden_word_batch,
 )
-from eslee_bot.utils.permissions import require_management_permission
+from eslee_bot.utils.permissions import (
+    interaction_user_can_manage,
+    require_management_permission,
+)
 from eslee_bot.utils.text import normalize_forbidden_word, truncate_text
 from eslee_bot.utils.time import format_kst, utc_now
 
@@ -26,6 +30,64 @@ if TYPE_CHECKING:
     from eslee_bot.bot import EsleeBot
 
 logger = logging.getLogger(__name__)
+
+CLEAR_CONFIRM_TIMEOUT_SECONDS = 60
+
+
+class ClearForbiddenWordsView(discord.ui.View):
+    """Ask the invoking manager to confirm wiping every forbidden word in a guild."""
+
+    def __init__(
+        self,
+        *,
+        owner_id: int,
+        clear: Callable[[], Awaitable[int]],
+        timeout: float = CLEAR_CONFIRM_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.owner_id = owner_id
+        self._clear = clear
+        self.message: discord.InteractionMessage | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message(
+            "🚫 명령어를 실행한 사람만 누를 수 있습니다.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="전체 삭제", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.stop()
+        # Admin rights may have been revoked while the prompt was open.
+        if not interaction_user_can_manage(interaction):
+            await interaction.response.edit_message(
+                content="🚫 해당 명령어를 사용할 권한이 없어 취소했습니다.", view=None
+            )
+            return
+        deleted = await self._clear()
+        await interaction.response.edit_message(
+            content=f"✅ 금지어 {deleted}개를 모두 삭제했습니다.", view=None
+        )
+
+    @discord.ui.button(label="취소", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.stop()
+        await interaction.response.edit_message(
+            content="취소했습니다. 금지어는 그대로 남아 있습니다.", view=None
+        )
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(
+                content="⌛ 시간이 지나 취소되었습니다. 금지어는 그대로 남아 있습니다.",
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
 
 
 class ModerationCog(commands.Cog):
@@ -131,6 +193,34 @@ class ModerationCog(commands.Cog):
             )
         text = "✅ 금지어를 삭제했습니다." if deleted else "🚫 등록된 금지어를 찾을 수 없습니다."
         await interaction.response.send_message(text, ephemeral=True)
+
+    @forbidden_group.command(
+        name="일괄삭제", description="이 서버의 금지어를 모두 삭제합니다. 확인 후 실행됩니다."
+    )
+    async def clear_forbidden_words(self, interaction: discord.Interaction) -> None:
+        if not await require_management_permission(interaction):
+            return
+        if interaction.guild is None:
+            return
+        guild_id = interaction.guild.id
+        async with self.bot.database.session_factory() as session:
+            count = len(await ForbiddenWordRepository(session).list_for_guild(guild_id))
+        if count == 0:
+            await interaction.response.send_message("등록된 금지어가 없습니다.", ephemeral=True)
+            return
+
+        async def clear() -> int:
+            async with self.bot.database.session_factory() as session:
+                return await ForbiddenWordRepository(session).delete_all_for_guild(guild_id)
+
+        view = ClearForbiddenWordsView(owner_id=interaction.user.id, clear=clear)
+        await interaction.response.send_message(
+            f"⚠️ 이 서버의 금지어 **{count}개**를 모두 삭제합니다. 되돌릴 수 없습니다.\n"
+            f"계속하려면 {CLEAR_CONFIRM_TIMEOUT_SECONDS}초 안에 **전체 삭제**를 누르세요.",
+            view=view,
+            ephemeral=True,
+        )
+        view.message = await interaction.original_response()
 
     @forbidden_group.command(name="목록", description="등록된 금지어를 표시합니다.")
     async def list_forbidden_words(self, interaction: discord.Interaction) -> None:

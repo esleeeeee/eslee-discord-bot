@@ -250,6 +250,13 @@ class ForbiddenWordRepository:
         await self.session.commit()
         return bool(result.rowcount)
 
+    async def delete_all_for_guild(self, guild_id: int) -> int:
+        result = await self.session.execute(
+            delete(ForbiddenWord).where(ForbiddenWord.guild_id == guild_id)
+        )
+        await self.session.commit()
+        return int(result.rowcount or 0)
+
 
 class ModerationViolationRepository:
     def __init__(self, session: AsyncSession) -> None:
